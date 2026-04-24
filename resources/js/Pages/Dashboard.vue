@@ -48,8 +48,11 @@ const getUserRole = (userId) => {
 
 const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: null, isUpdating: false });
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
-const currentSelection = ref(null);
 const tableApi = ref(null);
+const tableData = ref(JSON.parse(JSON.stringify(props.initialData))); // Глубокая копия для полной изоляции
+
+// Предохранитель для Undo/Redo
+const isUndoing = ref(false);
 
 // Внутренний буфер для копирования со стилями
 const internalClipboard = ref(null);
@@ -66,56 +69,68 @@ const saveUndoState = (changes) => {
 };
 
 const undo = () => {
-    if (undoStack.value.length === 0) return;
+    if (undoStack.value.length === 0 || isUndoing.value) return;
+    
+    isUndoing.value = true;
     const changes = undoStack.value.pop();
     const redoChanges = [];
     const affectedRowRefs = new Set();
-
-    changes.forEach(change => {
-        const { dataRef, field, oldValue, oldStyle } = change;
-        redoChanges.push({
-            dataRef, field,
-            oldValue: dataRef[field],
-            oldStyle: dataRef[field + '_style'] ? JSON.parse(JSON.stringify(dataRef[field + '_style'])) : null
+    
+    try {
+        changes.forEach(change => {
+            const { dataRef, field, oldValue, oldStyle } = change;
+            redoChanges.push({
+                dataRef, field,
+                oldValue: dataRef[field],
+                oldStyle: dataRef[field + '_style'] ? JSON.parse(JSON.stringify(dataRef[field + '_style'])) : null
+            });
+            dataRef[field] = oldValue;
+            if (oldStyle !== undefined) {
+                dataRef[field + '_style'] = oldStyle ? JSON.parse(JSON.stringify(oldStyle)) : null;
+            }
+            affectedRowRefs.add(dataRef);
         });
-        dataRef[field] = oldValue;
-        if (oldStyle !== undefined) {
-            dataRef[field + '_style'] = oldStyle ? JSON.parse(JSON.stringify(oldStyle)) : null;
-        }
-        affectedRowRefs.add(dataRef);
-    });
-    redoStack.value.push(redoChanges);
-    syncChangesToServer(Array.from(affectedRowRefs));
+        redoStack.value.push(redoChanges);
+        syncChangesToServer(Array.from(affectedRowRefs));
+    } finally {
+        setTimeout(() => { isUndoing.value = false; }, 100);
+    }
 };
 
 const redo = () => {
-    if (redoStack.value.length === 0) return;
+    if (redoStack.value.length === 0 || isUndoing.value) return;
+    
+    isUndoing.value = true;
     const changes = redoStack.value.pop();
     const undoChanges = [];
     const affectedRowRefs = new Set();
-
-    changes.forEach(change => {
-        const { dataRef, field, oldValue, oldStyle } = change;
-        undoChanges.push({
-            dataRef, field,
-            oldValue: dataRef[field],
-            oldStyle: dataRef[field + '_style'] ? JSON.parse(JSON.stringify(dataRef[field + '_style'])) : null
+    
+    try {
+        changes.forEach(change => {
+            const { dataRef, field, oldValue, oldStyle } = change;
+            undoChanges.push({
+                dataRef, field,
+                oldValue: dataRef[field],
+                oldStyle: dataRef[field + '_style'] ? JSON.parse(JSON.stringify(dataRef[field + '_style'])) : null
+            });
+            dataRef[field] = oldValue;
+            if (oldStyle !== undefined) {
+                dataRef[field + '_style'] = oldStyle ? JSON.parse(JSON.stringify(oldStyle)) : null;
+            }
+            affectedRowRefs.add(dataRef);
         });
-        dataRef[field] = oldValue;
-        if (oldStyle !== undefined) {
-            dataRef[field + '_style'] = oldStyle ? JSON.parse(JSON.stringify(oldStyle)) : null;
-        }
-        affectedRowRefs.add(dataRef);
-    });
-    undoStack.value.push(undoChanges);
-    syncChangesToServer(Array.from(affectedRowRefs));
+        undoStack.value.push(undoChanges);
+        syncChangesToServer(Array.from(affectedRowRefs));
+    } finally {
+        setTimeout(() => { isUndoing.value = false; }, 100);
+    }
 };
 
 const syncChangesToServer = (rows) => {
     const updatedRows = [];
     rows.forEach(row => {
-        let idx = props.initialData.indexOf(row);
-        if (idx === -1) idx = props.initialData.findIndex(r => r.id === row.id);
+        let idx = tableData.value.indexOf(row);
+        if (idx === -1) idx = tableData.value.findIndex(r => r.id === row.id);
         if (idx !== -1) updatedRows.push({ row_index: idx, data: row });
     });
 
@@ -143,17 +158,25 @@ const handleCellFocused = (event) => {
 watch(() => currentCellData.value.value, (newValue) => {
     if (currentCellData.value.isUpdating) return;
     if (currentCellData.value.rowIndex !== null && currentCellData.value.colId !== null) {
-        const row = props.initialData[currentCellData.value.rowIndex];
+        const row = tableData.value[currentCellData.value.rowIndex];
         if (row && row[currentCellData.value.colId] !== newValue) {
+            const oldValue = row[currentCellData.value.colId];
             row[currentCellData.value.colId] = newValue;
-            handleCellValueChanged({ data: row, node: { rowIndex: currentCellData.value.rowIndex } });
+            handleCellValueChanged({ 
+                data: row, 
+                node: { rowIndex: currentCellData.value.rowIndex },
+                column: { getColId: () => currentCellData.value.colId },
+                oldValue: oldValue
+            });
         }
     }
 });
 
 const handleCellValueChanged = (event) => {
     const { data, node, oldValue, column } = event;
-    if (column && oldValue !== undefined) {
+    
+    // НЕ сохраняем в Undo, если это само действие Undo/Redo
+    if (column && oldValue !== undefined && !isUndoing.value) {
         const field = column.getColId();
         saveUndoState([{
             dataRef: data, field, oldValue,
@@ -236,6 +259,27 @@ const handleRibbonAction = ({ type, value }) => {
     activeCellInfo.value.style = { ...(activeRowData[activeCol + '_style'] || {}) };
 };
 
+const handleRangeClear = ({ targetRows, colFields }) => {
+    const undoChanges = [];
+    targetRows.forEach(row => {
+        colFields.forEach(field => {
+            undoChanges.push({
+                dataRef: row, field, oldValue: row[field],
+                oldStyle: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null
+            });
+        });
+    });
+    saveUndoState(undoChanges);
+
+    targetRows.forEach(row => {
+        colFields.forEach(field => {
+            row[field] = '';
+        });
+    });
+
+    syncChangesToServer(targetRows);
+};
+
 const handleMenuAction = async (action) => {
     const params = cellContextMenu.value.params;
     if (!params) return;
@@ -243,30 +287,44 @@ const handleMenuAction = async (action) => {
     const row = params.node.data;
     if (!row) return;
 
+    // Если есть выделение, применяем действие к нему
+    if (currentSelection.value && (action === 'clear' || action === 'bold' || action === 'italic')) {
+        if (action === 'clear') {
+            handleRangeClear({
+                targetRows: tableData.value.slice(
+                    Math.min(currentSelection.value.start.row, currentSelection.value.end.row),
+                    Math.max(currentSelection.value.start.row, currentSelection.value.end.row) + 1
+                ),
+                colFields: columnDefs.value.slice(
+                    Math.min(currentSelection.value.start.col, currentSelection.value.end.col),
+                    Math.max(currentSelection.value.start.col, currentSelection.value.end.col) + 1
+                ).map(c => c.field)
+            });
+            return;
+        }
+        // Для стилей вызываем handleRibbonAction
+        handleRibbonAction(action);
+        return;
+    }
+
+    // Одиночное действие (если нет диапазона)
     saveUndoState([{
         dataRef: row, field, oldValue: row[field],
         oldStyle: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null
     }]);
 
-    if (!row[field + '_style']) row[field + '_style'] = {};
     try {
         switch (action) {
             case 'copy':
-                internalClipboard.value = {
-                    value: row[field],
-                    style: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null
-                };
+                internalClipboard.value = { value: row[field], style: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null };
                 await navigator.clipboard.writeText(row[field] || '');
                 break;
             case 'cut':
-                internalClipboard.value = {
-                    value: row[field],
-                    style: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null
-                };
+                internalClipboard.value = { value: row[field], style: row[field + '_style'] ? JSON.parse(JSON.stringify(row[field + '_style'])) : null };
                 await navigator.clipboard.writeText(row[field] || '');
                 row[field] = '';
-                row[field + '_style'] = null; // Очищаем стиль при вырезании
-                handleCellValueChanged({ data: row, node: params.node });
+                row[field + '_style'] = null;
+                syncChangesToServer([row]);
                 break;
             case 'paste':
                 if (internalClipboard.value) {
@@ -275,14 +333,25 @@ const handleMenuAction = async (action) => {
                 } else {
                     row[field] = await navigator.clipboard.readText();
                 }
-                handleCellValueChanged({ data: row, node: params.node });
+                syncChangesToServer([row]);
                 break;
-            case 'bold': row[field + '_style'].fontWeight = row[field + '_style'].fontWeight === 'bold' ? 'normal' : 'bold'; handleCellValueChanged({ data: row, node: params.node }); break;
-            case 'italic': row[field + '_style'].fontStyle = row[field + '_style'].fontStyle === 'italic' ? 'normal' : 'italic'; handleCellValueChanged({ data: row, node: params.node }); break;
-            case 'clear': row[field] = ''; handleCellValueChanged({ data: row, node: params.node }); break;
+            case 'bold': 
+                if (!row[field + '_style']) row[field + '_style'] = {};
+                row[field + '_style'].fontWeight = row[field + '_style'].fontWeight === 'bold' ? 'normal' : 'bold'; 
+                syncChangesToServer([row]);
+                break;
+            case 'italic': 
+                if (!row[field + '_style']) row[field + '_style'] = {};
+                row[field + '_style'].fontStyle = row[field + '_style'].fontStyle === 'italic' ? 'normal' : 'italic'; 
+                syncChangesToServer([row]);
+                break;
+            case 'clear': 
+                row[field] = ''; 
+                syncChangesToServer([row]);
+                break;
             case 'delete': if (confirm('Удалить содержимое ячейки?')) handleMenuAction('clear'); break;
         }
-        activeCellInfo.value.style = { ...row[field + '_style'] };
+        activeCellInfo.value.style = { ...(row[field + '_style'] || {}) };
     } catch (err) { console.error(err); }
 };
 
@@ -376,9 +445,10 @@ onMounted(() => {
             </div>
 
             <div class="overflow-hidden relative bg-white" style="height: calc(100vh - 200px);">
-                <ExcelTable v-if="activeSheet" :rowData="initialData" :columnDefs="columnDefs"
+                <ExcelTable v-if="activeSheet" :rowData="tableData" :columnDefs="columnDefs"
                     @cell-value-changed="handleCellValueChanged" @cell-focused="handleCellFocused"
-                    @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged" @ready="handleTableReady" />
+                    @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged" 
+                    @range-clear="handleRangeClear" @ready="handleTableReady" />
                 <ExcelContextMenu v-if="cellContextMenu.show" :x="cellContextMenu.x" :y="cellContextMenu.y" :cellData="cellContextMenu.params"
                     @close="cellContextMenu.show = false" @action="handleMenuAction" />
             </div>

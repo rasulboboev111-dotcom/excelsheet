@@ -14,7 +14,7 @@ const props = defineProps({
     readOnly: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['cell-value-changed', 'cell-focused', 'cell-context-menu', 'selection-changed', 'ready']);
+const emit = defineEmits(['cell-value-changed', 'cell-focused', 'cell-context-menu', 'selection-changed', 'ready', 'range-clear']);
 const gridApi = ref(null);
 
 const hf = HyperFormula.buildEmpty({ licenseKey: 'gpl-v3' });
@@ -125,10 +125,49 @@ const onCellMouseOver = (params) => {
 
 onMounted(() => {
     window.addEventListener('mouseup', () => { isSelecting.value = false; });
-    window.addEventListener('keydown', handleKeyDown);
 });
 
+const onGridKeyDown = (e) => {
+    handleKeyDown(e);
+};
+
 const handleKeyDown = (e) => {
+    // 1. Очистка диапазона по клавише Delete
+    if (e.key === 'Delete' || e.key === 'Del') {
+        if (!selectionStart.value || !selectionEnd.value) return;
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const sR = Math.min(selectionStart.value.row, selectionEnd.value.row);
+        const eR = Math.max(selectionStart.value.row, selectionEnd.value.row);
+        const sC = Math.min(selectionStart.value.col, selectionEnd.value.col);
+        const eC = Math.max(selectionStart.value.col, selectionEnd.value.col);
+
+        const updatedRows = [];
+        for (let r = sR; r <= eR; r++) {
+            const node = gridApi.value?.getDisplayedRowAtIndex(r);
+            if (node?.data) {
+                updatedRows.push({ row_index: r, data: node.data });
+            }
+        }
+
+        if (updatedRows.length > 0) {
+            emit('range-clear', {
+                targetRows: updatedRows.map(info => info.data),
+                colFields: Array.from(new Set(updatedRows.flatMap(info => {
+                    const fields = [];
+                    for (let c = sC; c <= eC; c++) {
+                        const f = props.columnDefs[c]?.field;
+                        if (f) fields.push(f);
+                    }
+                    return fields;
+                })))
+            });
+        }
+        return;
+    }
+
+    // 2. Навигация с Shift
     if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         if (!selectionStart.value || !selectionEnd.value) return;
         e.preventDefault();
@@ -206,6 +245,12 @@ const defaultColDef = {
     valueGetter: getCellValue,
     valueParser: (params) => params.newValue,
     headerClass: 'excel-column-header',
+    suppressKeyboardEvent: (params) => {
+        const key = params.event.key;
+        // Полностью забираем управление Delete и Backspace у таблицы
+        if (key === 'Delete' || key === 'Del') return true;
+        return false;
+    },
     cellStyle: (params) => {
         if (!params.data || !params.colDef.field) return null;
         return params.data[params.colDef.field + '_style'] || null;
@@ -264,6 +309,7 @@ const finalColumnDefs = computed(() => {
             @cell-mouse-down="onCellMouseDown"
             @cell-mouse-over="onCellMouseOver"
             @cell-context-menu="onCellContextMenu"
+            @keydown="onGridKeyDown"
             :animateRows="true"
             :headerHeight="24"
             :rowHeight="25"
