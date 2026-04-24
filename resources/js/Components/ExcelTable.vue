@@ -64,6 +64,11 @@ const onCellFocused = (event) => {
     const rowNode = gridApi.value.getDisplayedRowAtIndex(rowIndex);
     const rowData = rowNode?.data;
     const rawValue = rowData ? rowData[field] : '';
+
+    // Перерисовываем для подсветки заголовков
+    gridApi.value?.refreshHeader();
+    gridApi.value?.refreshCells({ columns: ['row_num'], force: true });
+
     emit('cell-focused', { 
         ...event, 
         field: field,
@@ -108,6 +113,11 @@ const onCellMouseOver = (params) => {
     const colIndex = props.columnDefs.findIndex(c => c.field === params.colDef.field);
     if (selectionEnd.value?.row !== params.node.rowIndex || selectionEnd.value?.col !== colIndex) {
         selectionEnd.value = { row: params.node.rowIndex, col: colIndex, rowData: params.node.data };
+        
+        // Обновляем для подсветки заголовков при растягивании
+        gridApi.value?.refreshHeader();
+        gridApi.value?.refreshCells({ columns: ['row_num'], force: true });
+        
         emit('selection-changed', { start: selectionStart.value, end: selectionEnd.value });
         gridApi.value?.refreshCells({ suppressFlash: true });
     }
@@ -209,10 +219,18 @@ const finalColumnDefs = computed(() => {
         valueGetter: "node.rowIndex + 1", 
         width: 45, minWidth: 45, maxWidth: 45,
         pinned: 'left', 
-        cellClass: 'excel-row-number-cell', 
         editable: false,
         sortable: false,
-        filter: false
+        filter: false,
+        cellClassRules: {
+            'excel-row-number-cell': () => true,
+            'excel-header-highlight': (params) => {
+                if (!selectionStart.value || !selectionEnd.value) return false;
+                const sR = Math.min(selectionStart.value.row, selectionEnd.value.row);
+                const eR = Math.max(selectionStart.value.row, selectionEnd.value.row);
+                return params.node.rowIndex >= sR && params.node.rowIndex <= eR;
+            }
+        }
     };
 
     // 2. Обрабатываем основные колонки (подсветка + правила классов)
@@ -272,30 +290,39 @@ const finalColumnDefs = computed(() => {
 }
 
 .ag-theme-balham .excel-range-selected {
-    background-color: rgba(33, 115, 70, 0.1) !important;
+    background-color: rgba(33, 115, 70, 0.08) !important;
     z-index: 2 !important;
 }
 
-.ag-theme-balham .excel-range-top { border-top: 2px solid #217346 !important; z-index: 5 !important; }
-.ag-theme-balham .excel-range-bottom { border-bottom: 2px solid #217346 !important; z-index: 5 !important; }
-.ag-theme-balham .excel-range-left { border-left: 2px solid #217346 !important; z-index: 5 !important; }
-.ag-theme-balham .excel-range-right { border-right: 2px solid #217346 !important; z-index: 5 !important; }
+.ag-theme-balham .excel-range-top { border-top: 2px solid #217346 !important; }
+.ag-theme-balham .excel-range-bottom { border-bottom: 2px solid #217346 !important; }
+.ag-theme-balham .excel-range-left { border-left: 2px solid #217346 !important; }
+.ag-theme-balham .excel-range-right { border-right: 2px solid #217346 !important; }
 
-.ag-theme-balham .excel-range-corner {
-    position: relative;
-    z-index: 10 !important;
-}
 .ag-theme-balham .excel-range-corner::after {
     content: '';
     position: absolute;
-    bottom: -4px;
-    right: -4px;
-    width: 7px;
-    height: 7px;
+    bottom: -3.5px;
+    right: -3.5px;
+    width: 6px;
+    height: 6px;
     background-color: #217346;
-    border: 1px solid white;
+    border: 1.5px solid white;
     z-index: 100;
     cursor: crosshair;
+}
+
+/* Header highlight like in real Excel */
+.ag-theme-balham .ag-header-cell.excel-header-highlight {
+    background-color: #e2e2e2 !important;
+    color: #217346 !important;
+    font-weight: bold !important;
+}
+.ag-theme-balham .ag-cell.row-num-cell.excel-header-highlight {
+    background-color: #e2e2e2 !important;
+    color: #217346 !important;
+    font-weight: bold !important;
+    border-right: 2px solid #217346 !important;
 }
 
 .ag-theme-balham .excel-active-cell {
