@@ -216,6 +216,120 @@ const handleRibbonAction = ({ type, value }) => {
         for (let c = startCol; c <= endCol; c++) { if (allCols[c]) cols.push(allCols[c].field); }
     }
 
+    // === Копирование / Вырезание ===
+    if (type === 'copy' || type === 'cut') {
+        const copyData = [];
+        targetRowsData.forEach(row => {
+            const rc = {};
+            cols.forEach(cId => {
+                rc[cId] = row[cId];
+                rc[cId + '_style'] = row[cId + '_style'] ? JSON.parse(JSON.stringify(row[cId + '_style'])) : null;
+            });
+            copyData.push(rc);
+        });
+        internalClipboard.value = { data: copyData, cols: [...cols] };
+        const text = targetRowsData.map(r => cols.map(c => r[c] || '').join('\t')).join('\n');
+        navigator.clipboard.writeText(text).catch(() => {});
+        if (type === 'cut') {
+            const uc = [];
+            targetRowsData.forEach(row => { cols.forEach(cId => { uc.push({ dataRef: row, field: cId, oldValue: row[cId], oldStyle: row[cId + '_style'] ? JSON.parse(JSON.stringify(row[cId + '_style'])) : null }); row[cId] = ''; }); });
+            saveUndoState(uc);
+            syncChangesToServer(targetRowsData);
+        }
+        return;
+    }
+
+    // === Вставка ===
+    if (type === 'paste') {
+        if (!internalClipboard.value?.data) {
+            navigator.clipboard.readText().then(text => {
+                if (text && activeRowData) {
+                    saveUndoState([{ dataRef: activeRowData, field: activeCol, oldValue: activeRowData[activeCol], oldStyle: null }]);
+                    activeRowData[activeCol] = text;
+                    syncChangesToServer([activeRowData]);
+                }
+            }).catch(() => {});
+            return;
+        }
+        const { data: clipData, cols: clipCols } = internalClipboard.value;
+        const uc = [];
+        const startColIdx = columnDefs.value.findIndex(c => c.field === activeCol);
+        clipData.forEach((clipRow, ri) => {
+            const tr = tableData.value[activeRow + ri];
+            if (!tr) return;
+            clipCols.forEach((cc, ci) => {
+                const tf = columnDefs.value[startColIdx + ci]?.field;
+                if (!tf) return;
+                uc.push({ dataRef: tr, field: tf, oldValue: tr[tf], oldStyle: tr[tf + '_style'] ? JSON.parse(JSON.stringify(tr[tf + '_style'])) : null });
+                tr[tf] = clipRow[cc];
+                tr[tf + '_style'] = clipRow[cc + '_style'] ? JSON.parse(JSON.stringify(clipRow[cc + '_style'])) : null;
+            });
+        });
+        saveUndoState(uc);
+        const affected = [...new Set(clipData.map((_, ri) => tableData.value[activeRow + ri]).filter(Boolean))];
+        syncChangesToServer(affected);
+        return;
+    }
+
+    // === Вставить строку ===
+    if (type === 'insertRow') {
+        const newRow = {};
+        columnDefs.value.forEach(col => { newRow[col.field] = ''; });
+        const at = activeRow !== null ? activeRow + 1 : tableData.value.length;
+        tableData.value.splice(at, 0, newRow);
+        const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
+        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+        tableApi.value?.refreshCells({ force: true });
+        return;
+    }
+
+    // === Удалить строку ===
+    if (type === 'deleteRow') {
+        if (activeRow === null || tableData.value.length <= 1) return;
+        tableData.value.splice(activeRow, 1);
+        const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
+        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+        tableApi.value?.refreshCells({ force: true });
+        return;
+    }
+
+    // === Автосумма ===
+    if (type === 'autosum') {
+        if (activeRow > 0) {
+            saveUndoState([{ dataRef: activeRowData, field: activeCol, oldValue: activeRowData[activeCol], oldStyle: null }]);
+            activeRowData[activeCol] = `=SUM(${activeCol}1:${activeCol}${activeRow})`;
+            syncChangesToServer([activeRowData]);
+        }
+        return;
+    }
+
+    // === Сортировка ===
+    if (type === 'sort') {
+        tableData.value.sort((a, b) => String(a[activeCol] || '').localeCompare(String(b[activeCol] || ''), 'ru'));
+        const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
+        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+        tableApi.value?.refreshCells({ force: true });
+        return;
+    }
+
+    // === Найти ===
+    if (type === 'find') {
+        const query = prompt('Найти:');
+        if (!query) return;
+        for (let ri = 0; ri < tableData.value.length; ri++) {
+            for (const col of columnDefs.value) {
+                if (String(tableData.value[ri][col.field] || '').toLowerCase().includes(query.toLowerCase())) {
+                    tableApi.value?.ensureIndexVisible(ri);
+                    tableApi.value?.setFocusedCell(ri, col.field);
+                    return;
+                }
+            }
+        }
+        alert('Не найдено');
+        return;
+    }
+
+    // === Стилевые действия ===
     // Capture Undo State
     const undoChanges = [];
     targetRowsData.forEach(row => {
@@ -249,6 +363,7 @@ const handleRibbonAction = ({ type, value }) => {
                 case 'bgColor': style.backgroundColor = value; break;
                 case 'textAlign': style.textAlign = value; break;
                 case 'valign': style.verticalAlign = value; break;
+                case 'wrapText': style.whiteSpace = style.whiteSpace === 'normal' ? 'nowrap' : 'normal'; break;
                 case 'fontSizeInc': style.fontSize = (getNumericSize(style.fontSize) + 1) + 'px'; break;
                 case 'fontSizeDec': style.fontSize = Math.max(8, getNumericSize(style.fontSize) - 1) + 'px'; break;
                 case 'clear': row[cId] = ''; break;
@@ -376,10 +491,19 @@ const handleCellContextMenu = (params) => { cellContextMenu.value = { show: true
 
 onMounted(() => {
     window.addEventListener('keydown', (e) => {
-        const isZ = e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'я';
-        const isY = e.key.toLowerCase() === 'y' || e.key.toLowerCase() === 'н';
-        if (e.ctrlKey && isZ) { e.preventDefault(); undo(); }
-        if (e.ctrlKey && isY) { e.preventDefault(); redo(); }
+        if (!e.ctrlKey) return;
+        const k = e.key.toLowerCase();
+        // Undo / Redo
+        if (k === 'z' || k === 'я') { e.preventDefault(); undo(); return; }
+        if (k === 'y' || k === 'н') { e.preventDefault(); redo(); return; }
+        // Copy / Cut / Paste
+        if (k === 'c' || k === 'с') { e.preventDefault(); handleRibbonAction({ type: 'copy' }); return; }
+        if (k === 'x' || k === 'ч') { e.preventDefault(); handleRibbonAction({ type: 'cut' }); return; }
+        if (k === 'v' || k === 'м') { e.preventDefault(); handleRibbonAction({ type: 'paste' }); return; }
+        // Bold / Italic / Underline
+        if (k === 'b' || k === 'и') { e.preventDefault(); handleRibbonAction({ type: 'bold' }); return; }
+        if (k === 'i' || k === 'ш') { e.preventDefault(); handleRibbonAction({ type: 'italic' }); return; }
+        if (k === 'u' || k === 'г') { e.preventDefault(); handleRibbonAction({ type: 'underline' }); return; }
     });
 });
 </script>
