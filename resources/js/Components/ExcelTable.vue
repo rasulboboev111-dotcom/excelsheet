@@ -132,8 +132,8 @@ const onGridKeyDown = (e) => {
 };
 
 const handleKeyDown = (e) => {
-    // 1. Очистка диапазона по клавише Delete
-    if (e.key === 'Delete' || e.key === 'Del') {
+    // 1. Очистка диапазона по клавише Delete или Backspace
+    if (e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace') {
         if (!selectionStart.value || !selectionEnd.value) return;
         e.preventDefault();
         e.stopPropagation();
@@ -247,8 +247,8 @@ const defaultColDef = {
     headerClass: 'excel-column-header',
     suppressKeyboardEvent: (params) => {
         const key = params.event.key;
-        // Полностью забираем управление Delete и Backspace у таблицы
-        if (key === 'Delete' || key === 'Del') return true;
+        // Полностью забираем управление Delete, Backspace и Del у таблицы
+        if (key === 'Delete' || key === 'Del' || key === 'Backspace') return true;
         return false;
     },
     cellStyle: (params) => {

@@ -50,6 +50,7 @@ const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: nu
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
 const tableApi = ref(null);
 const tableData = ref(JSON.parse(JSON.stringify(props.initialData))); // Глубокая копия для полной изоляции
+const currentSelection = ref(null);
 
 // Предохранитель для Undo/Redo
 const isUndoing = ref(false);
@@ -193,7 +194,7 @@ const handleCellValueChanged = (event) => {
 
 const handleRibbonAction = ({ type, value }) => {
     let { rowIndex: activeRow, colId: activeCol, rowData: activeRowData } = activeCellInfo.value;
-    if (!activeRowData && activeRow !== null) activeRowData = props.initialData[activeRow];
+    if (!activeRowData && activeRow !== null) activeRowData = tableData.value[activeRow];
     if (!activeRowData || activeCol === null) return;
 
     let targetRowsData = [activeRowData];

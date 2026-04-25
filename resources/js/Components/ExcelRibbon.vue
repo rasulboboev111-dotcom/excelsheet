@@ -37,6 +37,8 @@ const icons = {
     currency: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 4V12M5 6H10C11 6 12 7 12 8C12 9 11 10 10 10H5M8 10L12 14" stroke="#333" stroke-width="1.5"/></svg>`,
     percent: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="5" cy="5" r="2" stroke="#333"/><circle cx="11" cy="11" r="2" stroke="#333"/><path d="M12 4L4 12" stroke="#333" stroke-width="1.5"/></svg>`,
     comma: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="0" y="12" font-size="10" font-weight="bold" fill="#333">,000</text></svg>`,
+    decInc: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="1" y="12" font-size="9" fill="#333">.0</text><path d="M12 4L14 2L16 4" stroke="#217346" stroke-width="1.5"/></svg>`,
+    decDec: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="1" y="12" font-size="9" fill="#333">.0</text><path d="M12 10L14 12L16 10" stroke="#a4262c" stroke-width="1.5"/></svg>`,
     vTop: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 3H14M2 7H10M2 11H14" stroke="#333" stroke-width="1.5"/></svg>`,
     vMiddle: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 5H14M2 9H10M2 13H14" stroke="#333" stroke-width="1.5"/></svg>`,
     vBottom: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 7H14M2 11H10M2 15H14" stroke="#333" stroke-width="1.5"/></svg>`,
@@ -454,4 +456,3 @@ const icons = {
 .mini-icon { display: flex; align-items: center; }
 .mini-icon :deep(svg) { width: 16px; height: 16px; }
 </style>
-",Description:
