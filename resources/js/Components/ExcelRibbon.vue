@@ -27,8 +27,16 @@ const activePicker = ref(null);
 const currentBgColor = ref('#ffff00');
 const currentTextColor = ref('#ff0000');
 
+const bgNativePicker = ref(null);
+const textNativePicker = ref(null);
+
 const togglePicker = (type) => {
     activePicker.value = activePicker.value === type ? null : type;
+};
+
+const triggerNativePicker = (type) => {
+    if (type === 'bg' && bgNativePicker.value) bgNativePicker.value.click();
+    if (type === 'text' && textNativePicker.value) textNativePicker.value.click();
 };
 
 const selectColor = (color) => {
@@ -164,6 +172,11 @@ const icons = {
                                          @click="selectColor(color)"></div>
                                 </div>
                                 <div class="palette-option" @click="selectColor('transparent')">Нет заливки</div>
+                                <div class="palette-option flex-center" @click="triggerNativePicker('bg')">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="#333" stroke-dasharray="2 2"/><path d="M8 2V14M2 8H14M4 4L12 12M4 12L12 4" stroke="#f29900" stroke-width="1.5"/></svg>
+                                    <span style="margin-left: 6px;">Другие цвета...</span>
+                                </div>
+                                <input type="color" ref="bgNativePicker" class="hidden-picker" @input="selectColor($event.target.value)" />
                             </div>
                         </div>
 
@@ -193,6 +206,11 @@ const icons = {
                                          @click="selectColor(color)"></div>
                                 </div>
                                 <div class="palette-option" @click="selectColor('#000000')">Авто</div>
+                                <div class="palette-option flex-center" @click="triggerNativePicker('text')">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="#333" stroke-dasharray="2 2"/><path d="M8 2V14M2 8H14M4 4L12 12M4 12L12 4" stroke="#f29900" stroke-width="1.5"/></svg>
+                                    <span style="margin-left: 6px;">Другие цвета...</span>
+                                </div>
+                                <input type="color" ref="textNativePicker" class="hidden-picker" @input="selectColor($event.target.value)" />
                             </div>
                         </div>
 
@@ -610,5 +628,18 @@ const icons = {
 }
 .palette-option:hover {
     background: #f3f2f1;
+}
+.flex-center {
+    display: flex;
+    align-items: center;
+}
+.hidden-picker {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    border: none;
+    padding: 0;
+    pointer-events: none;
 }
 </style>
