@@ -239,6 +239,30 @@ const handleRibbonAction = ({ type, value }) => {
         return;
     }
 
+    // === Формат по образцу ===
+    if (type === 'formatPainter') {
+        const sourceStyle = activeRowData[activeCol + '_style'] ? JSON.parse(JSON.stringify(activeRowData[activeCol + '_style'])) : {};
+        // Add an event listener to the next selection
+        const onNextSelection = (e) => {
+            const selectedNodes = tableApi.value.getSelectedNodes();
+            const selectedRows = selectedNodes.map(n => n.data);
+            const colsToApply = tableApi.value.getCellRanges()[0].columns.map(c => c.colId);
+            
+            const uc = [];
+            selectedRows.forEach(row => {
+                colsToApply.forEach(cId => {
+                    uc.push({ dataRef: row, field: cId, oldValue: row[cId], oldStyle: row[cId + '_style'] ? JSON.parse(JSON.stringify(row[cId + '_style'])) : null });
+                    row[cId + '_style'] = { ...row[cId + '_style'], ...sourceStyle };
+                });
+            });
+            saveUndoState(uc);
+            syncChangesToServer(selectedRows);
+            tableApi.value.removeEventListener('rangeSelectionChanged', onNextSelection);
+        };
+        tableApi.value.addEventListener('rangeSelectionChanged', onNextSelection);
+        return;
+    }
+
     // === Вставка ===
     if (type === 'paste') {
         if (!internalClipboard.value?.data) {
@@ -312,6 +336,30 @@ const handleRibbonAction = ({ type, value }) => {
         return;
     }
 
+    // === Заполнить (Fill Down) ===
+    if (type === 'fill') {
+        if (targetRowsData.length > 1 && activeCol) {
+            const topValue = targetRowsData[0][activeCol];
+            const topStyle = targetRowsData[0][activeCol + '_style'] ? JSON.parse(JSON.stringify(targetRowsData[0][activeCol + '_style'])) : null;
+            const uc = [];
+            for (let i = 1; i < targetRowsData.length; i++) {
+                const tr = targetRowsData[i];
+                uc.push({ dataRef: tr, field: activeCol, oldValue: tr[activeCol], oldStyle: tr[activeCol + '_style'] ? JSON.parse(JSON.stringify(tr[activeCol + '_style'])) : null });
+                tr[activeCol] = topValue;
+                tr[activeCol + '_style'] = topStyle ? JSON.parse(JSON.stringify(topStyle)) : null;
+            }
+            saveUndoState(uc);
+            syncChangesToServer(targetRowsData);
+        }
+        return;
+    }
+
+    // === Стили ячеек и таблиц (заглушки) ===
+    if (type === 'conditional' || type === 'formatTable' || type === 'cellStyles') {
+        alert('Функция в разработке');
+        return;
+    }
+
     // === Найти ===
     if (type === 'find') {
         const query = prompt('Найти:');
@@ -364,8 +412,13 @@ const handleRibbonAction = ({ type, value }) => {
                 case 'textAlign': style.textAlign = value; break;
                 case 'valign': style.verticalAlign = value; break;
                 case 'wrapText': style.whiteSpace = style.whiteSpace === 'normal' ? 'nowrap' : 'normal'; break;
+                case 'border': style.border = style.border ? null : '1px solid #000'; break;
+                case 'format': style.numberFormat = value; break;
+                case 'precisionInc': style.decimals = (style.decimals !== undefined ? style.decimals : 2) + 1; break;
+                case 'precisionDec': style.decimals = Math.max(0, (style.decimals !== undefined ? style.decimals : 2) - 1); break;
                 case 'fontSizeInc': style.fontSize = (getNumericSize(style.fontSize) + 1) + 'px'; break;
                 case 'fontSizeDec': style.fontSize = Math.max(8, getNumericSize(style.fontSize) - 1) + 'px'; break;
+                case 'mergeCenter': style.textAlign = 'center'; style.verticalAlign = 'middle'; break;
                 case 'clear': row[cId] = ''; break;
             }
         });

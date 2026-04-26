@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 
 const props = defineProps({
     activeCell: Object
@@ -12,6 +12,44 @@ const handleAction = (type, value = null) => {
 };
 
 const fonts = ['Arial', 'Calibri', 'Times New Roman', 'Segoe UI', 'Roboto'];
+
+const themeColors = [
+    ['#FFFFFF', '#000000', '#E7E6E6', '#44546A', '#5B9BD5', '#ED7D31', '#A5A5A5', '#FFC000', '#4472C4', '#70AD47'],
+    ['#F2F2F2', '#7F7F7F', '#D0CECE', '#D6DCE4', '#DDEBF7', '#FCE4D6', '#EDEDED', '#FFF2CC', '#D9E1F2', '#E2EFDA'],
+    ['#D8D8D8', '#595959', '#AEAAAA', '#ADB9CA', '#BDD7EE', '#F8CBAD', '#DBDBDB', '#FFE699', '#B4C6E7', '#C6E0B4'],
+    ['#BFBFBF', '#3F3F3F', '#757171', '#8497B0', '#9BC2E6', '#F4B084', '#C9C9C9', '#FFD966', '#8EA9DB', '#A9D08E'],
+    ['#A5A5A5', '#262626', '#3A3838', '#333F4F', '#2E75B6', '#C55A11', '#7B7B7B', '#BF8F00', '#2F5597', '#548235'],
+    ['#7F7F7F', '#0C0C0C', '#161616', '#222A35', '#1F4E78', '#833C0C', '#525252', '#7F6000', '#1F3864', '#375623']
+];
+const standardColors = ['#C00000', '#FF0000', '#FFC000', '#FFFF00', '#92D050', '#00B050', '#00B0F0', '#0070C0', '#002060', '#7030A0'];
+
+const activePicker = ref(null);
+const currentBgColor = ref('#ffff00');
+const currentTextColor = ref('#ff0000');
+
+const togglePicker = (type) => {
+    activePicker.value = activePicker.value === type ? null : type;
+};
+
+const selectColor = (color) => {
+    if (activePicker.value === 'bgColor') {
+        currentBgColor.value = color || 'transparent';
+        handleAction('bgColor', color);
+    } else if (activePicker.value === 'color') {
+        currentTextColor.value = color || '#000000';
+        handleAction('color', color);
+    }
+    activePicker.value = null;
+};
+
+const closePickers = (e) => {
+    if (!e.target.closest('.color-picker-container')) {
+        activePicker.value = null;
+    }
+};
+
+onMounted(() => document.addEventListener('click', closePickers));
+onUnmounted(() => document.removeEventListener('click', closePickers));
 
 // SVG Icons as components or strings
 const icons = {
@@ -99,14 +137,65 @@ const icons = {
                         <button class="btn-tool italic" :class="{ active: activeCell?.style?.fontStyle === 'italic' }" @click="handleAction('italic')">К</button>
                         <button class="btn-tool underline" :class="{ active: activeCell?.style?.textDecoration === 'underline' }" @click="handleAction('underline')"><u>Ч</u></button>
                         <button class="btn-tool border" @click="handleAction('border')" v-html="icons.border"></button>
-                        <button class="btn-tool" @click="handleAction('bgColor', '#ffff00')">
-                            <div v-html="icons.bucket"></div>
-                            <div class="c-bar yellow"></div>
-                        </button>
-                        <button class="btn-tool" @click="handleAction('color', '#ff0000')">
-                            <span class="a-text">A</span>
-                            <div class="c-bar red"></div>
-                        </button>
+                        
+                        <div class="color-picker-container">
+                            <div class="split-btn">
+                                <button class="btn-tool" @click="handleAction('bgColor', currentBgColor)">
+                                    <div v-html="icons.bucket"></div>
+                                    <div class="c-bar" :style="{ backgroundColor: currentBgColor === 'transparent' ? '#fff' : currentBgColor }"></div>
+                                </button>
+                                <button class="btn-tool drop-btn" @click.stop="togglePicker('bgColor')">
+                                    <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg>
+                                </button>
+                            </div>
+                            <div class="color-dropdown" v-if="activePicker === 'bgColor'" @click.stop>
+                                <div class="palette-title">Цвета темы</div>
+                                <div class="palette-grid">
+                                    <div v-for="(col, cIdx) in themeColors[0]" :key="'bg-theme-col-'+cIdx" class="palette-col">
+                                        <div v-for="(row, rIdx) in themeColors" :key="'bg-theme-'+cIdx+'-'+rIdx" 
+                                             class="color-swatch" :style="{ backgroundColor: themeColors[rIdx][cIdx] }"
+                                             @click="selectColor(themeColors[rIdx][cIdx])"></div>
+                                    </div>
+                                </div>
+                                <div class="palette-title">Стандартные цвета</div>
+                                <div class="palette-row">
+                                    <div v-for="color in standardColors" :key="'bg-std-'+color" 
+                                         class="color-swatch" :style="{ backgroundColor: color }"
+                                         @click="selectColor(color)"></div>
+                                </div>
+                                <div class="palette-option" @click="selectColor('transparent')">Нет заливки</div>
+                            </div>
+                        </div>
+
+                        <div class="color-picker-container">
+                            <div class="split-btn">
+                                <button class="btn-tool" @click="handleAction('color', currentTextColor)">
+                                    <span class="a-text">A</span>
+                                    <div class="c-bar" :style="{ backgroundColor: currentTextColor }"></div>
+                                </button>
+                                <button class="btn-tool drop-btn" @click.stop="togglePicker('color')">
+                                    <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg>
+                                </button>
+                            </div>
+                            <div class="color-dropdown" v-if="activePicker === 'color'" @click.stop>
+                                <div class="palette-title">Цвета темы</div>
+                                <div class="palette-grid">
+                                    <div v-for="(col, cIdx) in themeColors[0]" :key="'text-theme-col-'+cIdx" class="palette-col">
+                                        <div v-for="(row, rIdx) in themeColors" :key="'text-theme-'+cIdx+'-'+rIdx" 
+                                             class="color-swatch" :style="{ backgroundColor: themeColors[rIdx][cIdx] }"
+                                             @click="selectColor(themeColors[rIdx][cIdx])"></div>
+                                    </div>
+                                </div>
+                                <div class="palette-title">Стандартные цвета</div>
+                                <div class="palette-row">
+                                    <div v-for="color in standardColors" :key="'text-std-'+color" 
+                                         class="color-swatch" :style="{ backgroundColor: color }"
+                                         @click="selectColor(color)"></div>
+                                </div>
+                                <div class="palette-option" @click="selectColor('#000000')">Авто</div>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
                 <div class="group-label">Шрифт</div>
@@ -455,4 +544,71 @@ const icons = {
 }
 .mini-icon { display: flex; align-items: center; }
 .mini-icon :deep(svg) { width: 16px; height: 16px; }
+
+/* Color Picker Styles */
+.color-picker-container {
+    position: relative;
+    display: inline-flex;
+}
+.split-btn {
+    display: flex;
+    align-items: stretch;
+}
+.split-btn .drop-btn {
+    padding: 0 2px;
+    min-width: 14px;
+}
+.color-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: #fff;
+    border: 1px solid #ccc;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    padding: 8px;
+    z-index: 1000;
+    width: 190px;
+}
+.palette-title {
+    font-size: 11px;
+    color: #333;
+    margin: 4px 0;
+    font-weight: 500;
+}
+.palette-grid {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 8px;
+}
+.palette-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.palette-row {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 8px;
+}
+.color-swatch {
+    width: 15px;
+    height: 15px;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+.color-swatch:hover {
+    border-color: #f29900;
+    outline: 1px solid #f29900;
+}
+.palette-col .color-swatch:first-child {
+    margin-bottom: 5px; /* Gap between main color and shades */
+}
+.palette-option {
+    font-size: 12px;
+    padding: 4px;
+    cursor: pointer;
+}
+.palette-option:hover {
+    background: #f3f2f1;
+}
 </style>

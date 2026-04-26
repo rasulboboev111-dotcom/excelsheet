@@ -243,6 +243,30 @@ const defaultColDef = {
     flex: 1, minWidth: 100, filter: true, sortable: true, resizable: true,
     editable: (params) => !props.readOnly,
     valueGetter: getCellValue,
+    valueFormatter: (params) => {
+        const val = params.value;
+        if (val === null || val === undefined || val === '') return val;
+        const style = params.data?.[params.colDef.field + '_style'] || {};
+        
+        const num = parseFloat(val);
+        if (isNaN(num)) return val;
+
+        let formatted = val; // По умолчанию показываем как есть
+        
+        if (style.decimals !== undefined) {
+            formatted = num.toFixed(style.decimals);
+        } else if (style.numberFormat === 'currency' || style.numberFormat === 'percentage') {
+            formatted = num.toFixed(2); // Дефолт для денег и процентов
+        }
+
+        if (style.numberFormat === 'currency') formatted = '$' + formatted;
+        if (style.numberFormat === 'percentage') formatted = formatted + '%';
+        if (style.numberFormat === 'shortDate') {
+            const d = new Date(num);
+            if (!isNaN(d)) formatted = d.toLocaleDateString();
+        }
+        return formatted;
+    },
     valueParser: (params) => params.newValue,
     headerClass: 'excel-column-header',
     suppressKeyboardEvent: (params) => {
