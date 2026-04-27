@@ -31,6 +31,7 @@ use App\Http\Controllers\SheetPermissionController;
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [SheetController::class, 'index'])->name('dashboard');
     Route::post('/sheets', [SheetController::class, 'store'])->name('sheets.store');
+    Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])->name('sheets.importSheet');
     Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])->name('sheets.update');
     Route::delete('/sheets/{sheet}', [SheetController::class, 'destroy'])->name('sheets.destroy');
     Route::post('/sheets/{sheet}/data', [SheetController::class, 'updateData'])->name('sheets.updateData');

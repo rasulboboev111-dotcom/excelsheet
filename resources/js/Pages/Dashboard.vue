@@ -3,8 +3,11 @@ import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
 import { Head, router, useForm } from '@inertiajs/vue3';
 import ExcelTable from '@/Components/ExcelTable.vue';
 import ExcelRibbon from '@/Components/ExcelRibbon.vue';
-import { ref, computed, onMounted, watch } from 'vue';
+import ExcelContextMenu from '@/Components/ExcelContextMenu.vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import axios from 'axios';
+import { useSheetMeta } from '@/Composables/useSheetMeta';
+import { readXlsxFile, writeXlsxFile } from '@/Composables/xlsxIO';
 
 const vFocus = {
     mounted: (el) => el.focus()
@@ -46,7 +49,8 @@ const getUserRole = (userId) => {
     return assignedUsers.value.find(u => u.id === userId)?.role || 'none';
 };
 
-const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: null, isUpdating: false });
+const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: null });
+const isFormulaBarUpdating = ref(false);
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
 const tableApi = ref(null);
 const tableData = ref(JSON.parse(JSON.stringify(props.initialData))); // Глубокая копия для полной изоляции
@@ -57,6 +61,192 @@ const isUndoing = ref(false);
 
 // Внутренний буфер для копирования со стилями
 const internalClipboard = ref(null);
+
+// Состояние "Формат по образцу"
+const pendingFormatPainter = ref(null);
+
+// --- Sheet meta (merges, validations, colWidths, rowHeights, hidden) ---
+const activeSheetId = computed(() => props.activeSheet?.id);
+const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId);
+
+const handleColumnResized = ({ field, width }) => {
+    sheetMeta.value.colWidths = { ...sheetMeta.value.colWidths, [field]: width };
+};
+
+const handleRowResized = ({ rowIndex, height }) => {
+    sheetMeta.value.rowHeights = { ...sheetMeta.value.rowHeights, [rowIndex]: height };
+};
+
+// Статистика по выделению (Excel показывает в нижней панели). Лимит на скан, чтобы не лагать.
+const STATS_MAX_CELLS = 200000;
+const selectionStats = computed(() => {
+    if (!currentSelection.value) return null;
+    const { start, end } = currentSelection.value;
+    const r1 = Math.min(start.row, end.row);
+    const r2 = Math.max(start.row, end.row);
+    const c1 = Math.min(start.col, end.col);
+    const c2 = Math.max(start.col, end.col);
+    const cols = columnDefs.value;
+    let sum = 0, count = 0, numCount = 0, min = Infinity, max = -Infinity, scanned = 0;
+    let truncated = false;
+    outer:
+    for (let r = r1; r <= r2; r++) {
+        const row = tableData.value[r];
+        if (!row) continue;
+        for (let c = c1; c <= c2; c++) {
+            if (++scanned > STATS_MAX_CELLS) { truncated = true; break outer; }
+            const f = cols[c]?.field;
+            if (!f) continue;
+            const v = row[f];
+            if (v === null || v === undefined || v === '') continue;
+            count++;
+            const n = parseFloat(v);
+            if (!isNaN(n) && isFinite(n)) {
+                sum += n; numCount++;
+                if (n < min) min = n;
+                if (n > max) max = n;
+            }
+        }
+    }
+    return {
+        count, numCount, truncated,
+        sum: numCount > 0 ? sum : null,
+        avg: numCount > 0 ? sum / numCount : null,
+        min: numCount > 0 ? min : null,
+        max: numCount > 0 ? max : null
+    };
+});
+
+const fmt = (n) => {
+    if (n === null || n === undefined) return '';
+    if (Math.abs(n) >= 1e6 || (n !== 0 && Math.abs(n) < 0.01)) return n.toExponential(2);
+    return Number(n.toFixed(2)).toLocaleString('ru-RU');
+};
+
+const handleMergeCells = () => {
+    if (!currentSelection.value) return;
+    const { start, end } = currentSelection.value;
+    const row = Math.min(start.row, end.row);
+    const col = Math.min(start.col, end.col);
+    const rowSpan = Math.abs(end.row - start.row) + 1;
+    const colSpan = Math.abs(end.col - start.col) + 1;
+    if (rowSpan === 1 && colSpan === 1) return;
+    // Удаляем мерджи, попавшие в новый прямоугольник
+    const merges = (sheetMeta.value.merges || []).filter(m => {
+        const overlap = !(m.row + m.rowSpan <= row || m.row >= row + rowSpan || m.col + m.colSpan <= col || m.col >= col + colSpan);
+        return !overlap;
+    });
+    merges.push({ row, col, rowSpan, colSpan });
+    sheetMeta.value.merges = merges;
+    tableApi.value?.refreshCells({ force: true });
+    tableApi.value?.redrawRows();
+};
+
+const handleUnmergeCells = () => {
+    if (!currentSelection.value) return;
+    const { start, end } = currentSelection.value;
+    const r1 = Math.min(start.row, end.row), r2 = Math.max(start.row, end.row);
+    const c1 = Math.min(start.col, end.col), c2 = Math.max(start.col, end.col);
+    sheetMeta.value.merges = (sheetMeta.value.merges || []).filter(m => {
+        const overlap = !(m.row + m.rowSpan <= r1 || m.row > r2 || m.col + m.colSpan <= c1 || m.col > c2);
+        return !overlap;
+    });
+    tableApi.value?.refreshCells({ force: true });
+    tableApi.value?.redrawRows();
+};
+
+const handleSetValidation = () => {
+    const { rowIndex, colId } = activeCellInfo.value;
+    if (rowIndex === null || !colId) {
+        alert('Сначала выделите ячейку в нужной колонке');
+        return;
+    }
+    const existing = sheetMeta.value.validations?.[colId];
+    const cur = Array.isArray(existing) ? existing.join(', ') : '';
+    const input = prompt(`Список значений для колонки "${colId}" (через запятую). Пусто = убрать проверку.`, cur);
+    if (input === null) return;
+    const list = input.split(',').map(s => s.trim()).filter(Boolean);
+    const v = { ...(sheetMeta.value.validations || {}) };
+    if (list.length === 0) delete v[colId];
+    else v[colId] = list;
+    sheetMeta.value.validations = v;
+};
+
+// Версионный счётчик — увеличивается при любом изменении hidden-состояния,
+// чтобы visibleSheets / isSheetHidden пересчитывались (Vue не отслеживает localStorage сам).
+const hiddenVersion = ref(0);
+
+const handleToggleHideSheet = (sheet) => {
+    if (!sheet) return;
+    const id = sheet.id;
+    try {
+        const k = `excel_sheet_meta_${id}`;
+        const cur = JSON.parse(localStorage.getItem(k) || '{}');
+        cur.hidden = !cur.hidden;
+        localStorage.setItem(k, JSON.stringify(cur));
+    } catch (_) {}
+    hiddenVersion.value++;
+    closeContextMenu();
+    if (sheet.id === props.activeSheet?.id) router.visit(route('dashboard'));
+};
+
+const isSheetHidden = (sheetId) => {
+    // eslint-disable-next-line no-unused-expressions
+    hiddenVersion.value; // зависимость для реактивности
+    try {
+        const raw = localStorage.getItem(`excel_sheet_meta_${sheetId}`);
+        if (!raw) return false;
+        return !!JSON.parse(raw).hidden;
+    } catch (_) { return false; }
+};
+const showHidden = ref(false);
+const visibleSheets = computed(() => {
+    // eslint-disable-next-line no-unused-expressions
+    hiddenVersion.value;
+    if (showHidden.value) return props.sheets || [];
+    return (props.sheets || []).filter(s => s.id === props.activeSheet?.id || !isSheetHidden(s.id));
+});
+
+// --- Авто-расширение таблицы (как в Excel) ---
+const ROW_INITIAL = 100;
+const ROW_GROW = 50;
+const COL_INITIAL = 26;
+const COL_GROW = 10;
+const MAX_ROWS = 1048576;
+const MAX_COLS = 16384;
+
+const extraRowCount = ref(Math.max(ROW_INITIAL, (props.initialData?.length ?? 0)));
+const extraColCount = ref(Math.max(COL_INITIAL, (props.activeSheet?.columns?.length ?? 0)));
+
+const colLetter = (idx) => {
+    let s = '';
+    let n = idx;
+    while (true) {
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        n = Math.floor(n / 26) - 1;
+        if (n < 0) break;
+    }
+    return s;
+};
+
+const padTableData = () => {
+    const target = Math.min(extraRowCount.value, MAX_ROWS);
+    while (tableData.value.length < target) {
+        tableData.value.push({});
+    }
+};
+watch(extraRowCount, padTableData, { immediate: true });
+
+const handleGrowRows = () => {
+    if (extraRowCount.value < MAX_ROWS) {
+        extraRowCount.value = Math.min(extraRowCount.value + ROW_GROW, MAX_ROWS);
+    }
+};
+const handleGrowCols = () => {
+    if (extraColCount.value < MAX_COLS) {
+        extraColCount.value = Math.min(extraColCount.value + COL_GROW, MAX_COLS);
+    }
+};
 
 // --- UNDO / REDO SYSTEM ---
 const undoStack = ref([]);
@@ -136,14 +326,20 @@ const syncChangesToServer = (rows) => {
     });
 
     if (updatedRows.length > 0) {
-        router.post(route('sheets.updateData', props.activeSheet.id), { rows: updatedRows }, 
-        { preserveScroll: true, preserveState: true, onSuccess: () => tableApi.value?.redrawRows() });
+        router.post(route('sheets.updateData', props.activeSheet.id), { rows: updatedRows },
+        { preserveScroll: true, preserveState: true });
     }
     tableApi.value?.redrawRows();
 };
 
 const handleTableReady = (api) => { tableApi.value = api; };
-const handleSelectionChanged = (selection) => { currentSelection.value = selection; };
+const handleSelectionChanged = (selection) => {
+    currentSelection.value = selection;
+    // Применяем "Формат по образцу" к новому выделению
+    if (pendingFormatPainter.value && selection) {
+        applyFormatPainter(selection);
+    }
+};
 
 const handleCellFocused = (event) => {
     const { field, rowIndex, rowData, position, rawValue } = event;
@@ -152,19 +348,22 @@ const handleCellFocused = (event) => {
         rowIndex, colId: field, rowData: rowData,
         style: rowData ? (rowData[field + '_style'] || {}) : {}
     };
-    currentCellData.value.isUpdating = true;
-    currentCellData.value = { value: rawValue || '', position: position || '', rowIndex, colId: field, isUpdating: false };
+    isFormulaBarUpdating.value = true;
+    currentCellData.value = { value: rawValue ?? '', position: position || '', rowIndex, colId: field };
 };
 
 watch(() => currentCellData.value.value, (newValue) => {
-    if (currentCellData.value.isUpdating) return;
+    if (isFormulaBarUpdating.value) {
+        isFormulaBarUpdating.value = false;
+        return;
+    }
     if (currentCellData.value.rowIndex !== null && currentCellData.value.colId !== null) {
         const row = tableData.value[currentCellData.value.rowIndex];
         if (row && row[currentCellData.value.colId] !== newValue) {
             const oldValue = row[currentCellData.value.colId];
             row[currentCellData.value.colId] = newValue;
-            handleCellValueChanged({ 
-                data: row, 
+            handleCellValueChanged({
+                data: row,
                 node: { rowIndex: currentCellData.value.rowIndex },
                 column: { getColId: () => currentCellData.value.colId },
                 oldValue: oldValue
@@ -172,6 +371,41 @@ watch(() => currentCellData.value.value, (newValue) => {
         }
     }
 });
+
+const applyFormatPainter = (selection) => {
+    const sourceStyle = pendingFormatPainter.value;
+    pendingFormatPainter.value = null;
+    if (!sourceStyle) return;
+
+    const { start, end } = selection;
+    const startRow = Math.min(start.row, end.row);
+    const endRow = Math.max(start.row, end.row);
+    const startCol = Math.min(start.col, end.col);
+    const endCol = Math.max(start.col, end.col);
+
+    const targetRows = [];
+    for (let r = startRow; r <= endRow; r++) {
+        if (tableData.value[r]) targetRows.push(tableData.value[r]);
+    }
+    const allCols = columnDefs.value;
+    const cols = [];
+    for (let c = startCol; c <= endCol; c++) { if (allCols[c]) cols.push(allCols[c].field); }
+
+    const uc = [];
+    targetRows.forEach(row => {
+        cols.forEach(cId => {
+            uc.push({
+                dataRef: row, field: cId, oldValue: row[cId],
+                oldStyle: row[cId + '_style'] ? JSON.parse(JSON.stringify(row[cId + '_style'])) : null
+            });
+            row[cId + '_style'] = { ...(row[cId + '_style'] || {}), ...sourceStyle };
+        });
+    });
+    if (uc.length > 0) {
+        saveUndoState(uc);
+        syncChangesToServer(targetRows);
+    }
+};
 
 const handleCellValueChanged = (event) => {
     const { data, node, oldValue, column } = event;
@@ -184,15 +418,85 @@ const handleCellValueChanged = (event) => {
             oldStyle: data[field + '_style'] ? JSON.parse(JSON.stringify(data[field + '_style'])) : null
         }]);
     }
-    const rowIndex = node?.rowIndex ?? node?.row_index;
-    if (rowIndex !== null && rowIndex !== undefined) {
+    let rowIndex = node?.rowIndex ?? node?.row_index;
+    if (rowIndex == null || rowIndex < 0) {
+        // fallback: ищем по ссылке в полном tableData
+        rowIndex = tableData.value.indexOf(data);
+    }
+    if (rowIndex >= 0) {
         router.post(route('sheets.updateData', props.activeSheet.id), {
             rows: [{ row_index: rowIndex, data: data }]
         }, { preserveScroll: true, preserveState: true });
     }
 };
 
+const applyBorder = (style, type, edges) => {
+    const thin = '1px solid #000';
+    const thick = '2px solid #000';
+    const dbl = '3px double #000';
+    const { isTopEdge, isBottomEdge, isLeftEdge, isRightEdge } = edges;
+    // Сбрасываем шорткат, чтобы не перекрывал индивидуальные стороны
+    if (style.border) delete style.border;
+
+    if (!type || type === 'none') {
+        delete style.borderTop; delete style.borderBottom;
+        delete style.borderLeft; delete style.borderRight;
+        return;
+    }
+    if (type === 'all') {
+        style.borderTop = thin; style.borderBottom = thin;
+        style.borderLeft = thin; style.borderRight = thin;
+        return;
+    }
+    if (type === 'outside') {
+        if (isTopEdge) style.borderTop = thin;
+        if (isBottomEdge) style.borderBottom = thin;
+        if (isLeftEdge) style.borderLeft = thin;
+        if (isRightEdge) style.borderRight = thin;
+        return;
+    }
+    if (type === 'thickBox') {
+        if (isTopEdge) style.borderTop = thick;
+        if (isBottomEdge) style.borderBottom = thick;
+        if (isLeftEdge) style.borderLeft = thick;
+        if (isRightEdge) style.borderRight = thick;
+        return;
+    }
+    if (type === 'top') { if (isTopEdge) style.borderTop = thin; return; }
+    if (type === 'bottom') { if (isBottomEdge) style.borderBottom = thin; return; }
+    if (type === 'left') { if (isLeftEdge) style.borderLeft = thin; return; }
+    if (type === 'right') { if (isRightEdge) style.borderRight = thin; return; }
+    if (type === 'bottomDouble') { if (isBottomEdge) style.borderBottom = dbl; return; }
+    if (type === 'bottomThick') { if (isBottomEdge) style.borderBottom = thick; return; }
+    if (type === 'topBottom') {
+        if (isTopEdge) style.borderTop = thin;
+        if (isBottomEdge) style.borderBottom = thin;
+        return;
+    }
+    if (type === 'topThickBottom') {
+        if (isTopEdge) style.borderTop = thin;
+        if (isBottomEdge) style.borderBottom = thick;
+        return;
+    }
+    if (type === 'topDoubleBottom') {
+        if (isTopEdge) style.borderTop = thin;
+        if (isBottomEdge) style.borderBottom = dbl;
+        return;
+    }
+};
+
 const handleRibbonAction = ({ type, value }) => {
+    // Глобальные действия, которые не требуют активной ячейки
+    if (type === 'import') { triggerImport(); return; }
+    if (type === 'export') { exportXlsx(); return; }
+    if (type === 'mergeCells') { handleMergeCells(); return; }
+    if (type === 'unmergeCells') { handleUnmergeCells(); return; }
+    if (type === 'setValidation') { handleSetValidation(); return; }
+    if (type === 'toggleHidden') { showHidden.value = !showHidden.value; return; }
+    if (type === 'freezeRow') { handleToggleFreezeRow(); return; }
+    if (type === 'freezeCol') { handleToggleFreezeCol(); return; }
+    if (type === 'findReplace') { openFindReplace(); return; }
+
     let { rowIndex: activeRow, colId: activeCol, rowData: activeRowData } = activeCellInfo.value;
     if (!activeRowData && activeRow !== null) activeRowData = tableData.value[activeRow];
     if (!activeRowData || activeCol === null) return;
@@ -208,8 +512,8 @@ const handleRibbonAction = ({ type, value }) => {
         const endCol = Math.max(start.col, end.col);
         targetRowsData = [];
         for (let r = startRow; r <= endRow; r++) {
-            const node = tableApi.value?.getDisplayedRowAtIndex(r);
-            if (node?.data) targetRowsData.push(node.data);
+            const row = tableData.value[r];
+            if (row) targetRowsData.push(row);
         }
         cols = [];
         const allCols = columnDefs.value;
@@ -241,25 +545,9 @@ const handleRibbonAction = ({ type, value }) => {
 
     // === Формат по образцу ===
     if (type === 'formatPainter') {
-        const sourceStyle = activeRowData[activeCol + '_style'] ? JSON.parse(JSON.stringify(activeRowData[activeCol + '_style'])) : {};
-        // Add an event listener to the next selection
-        const onNextSelection = (e) => {
-            const selectedNodes = tableApi.value.getSelectedNodes();
-            const selectedRows = selectedNodes.map(n => n.data);
-            const colsToApply = tableApi.value.getCellRanges()[0].columns.map(c => c.colId);
-            
-            const uc = [];
-            selectedRows.forEach(row => {
-                colsToApply.forEach(cId => {
-                    uc.push({ dataRef: row, field: cId, oldValue: row[cId], oldStyle: row[cId + '_style'] ? JSON.parse(JSON.stringify(row[cId + '_style'])) : null });
-                    row[cId + '_style'] = { ...row[cId + '_style'], ...sourceStyle };
-                });
-            });
-            saveUndoState(uc);
-            syncChangesToServer(selectedRows);
-            tableApi.value.removeEventListener('rangeSelectionChanged', onNextSelection);
-        };
-        tableApi.value.addEventListener('rangeSelectionChanged', onNextSelection);
+        pendingFormatPainter.value = activeRowData[activeCol + '_style']
+            ? JSON.parse(JSON.stringify(activeRowData[activeCol + '_style']))
+            : {};
         return;
     }
 
@@ -354,8 +642,8 @@ const handleRibbonAction = ({ type, value }) => {
         return;
     }
 
-    // === Стили ячеек и таблиц (заглушки) ===
-    if (type === 'conditional' || type === 'formatTable' || type === 'cellStyles') {
+    // === Условное форматирование и таблицы (заглушки) ===
+    if (type === 'conditional' || type === 'formatTable') {
         alert('Функция в разработке');
         return;
     }
@@ -396,12 +684,57 @@ const handleRibbonAction = ({ type, value }) => {
         underline: activeRowData[activeCol + '_style']?.textDecoration !== 'underline' ? 'underline' : 'none'
     };
 
-    targetRowsData.forEach(row => {
-        cols.forEach(cId => {
+    const rowsLen = targetRowsData.length;
+    const colsLen = cols.length;
+    targetRowsData.forEach((row, ri) => {
+        cols.forEach((cId, ci) => {
             if (!row[cId + '_style']) row[cId + '_style'] = {};
             const style = row[cId + '_style'];
             const getNumericSize = (s) => parseInt(s?.replace('px', '') || '11');
+            const isTopEdge = ri === 0;
+            const isBottomEdge = ri === rowsLen - 1;
+            const isLeftEdge = ci === 0;
+            const isRightEdge = ci === colsLen - 1;
             switch (type) {
+                case 'applyCellStyle':
+                    if (value === 'normal') {
+                        style.backgroundColor = 'transparent'; style.color = '#000000'; delete style.border; style.fontWeight = 'normal'; style.fontStyle = 'normal'; style.fontSize = '11px';
+                    } else if (value === 'neutral') {
+                        style.backgroundColor = '#ffeb9c'; style.color = '#9c6500';
+                    } else if (value === 'bad') {
+                        style.backgroundColor = '#ffc7ce'; style.color = '#9c0006';
+                    } else if (value === 'good') {
+                        style.backgroundColor = '#c6efce'; style.color = '#006100';
+                    } else if (value === 'input') {
+                        style.backgroundColor = '#f2dddc'; style.color = '#e26b0a'; style.border = '1px solid #7f7f7f';
+                    } else if (value === 'output') {
+                        style.backgroundColor = '#f2f2f2'; style.color = '#3f3f3f'; style.border = '1px solid #3f3f3f'; style.fontWeight = 'bold';
+                    } else if (value === 'calc') {
+                        style.backgroundColor = '#ffffff'; style.color = '#fa7d00'; style.border = '1px solid #7f7f7f'; style.fontWeight = 'bold';
+                    } else if (value === 'check') {
+                        style.backgroundColor = '#a5a5a5'; style.color = '#ffffff'; style.border = '2px solid #3f3f3f'; style.fontWeight = 'bold';
+                    } else if (value === 'explain') {
+                        style.backgroundColor = 'transparent'; style.color = '#7f7f7f'; style.fontStyle = 'italic';
+                    } else if (value === 'note') {
+                        style.backgroundColor = '#ffffcc'; style.color = '#000000'; style.border = '1px solid #b2b2b2';
+                    } else if (value === 'linked') {
+                        style.backgroundColor = 'transparent'; style.color = '#fa7d00'; style.border = 'none'; style.borderBottom = '2px solid #ff8001';
+                    } else if (value === 'warning') {
+                        style.backgroundColor = 'transparent'; style.color = '#ff0000';
+                    } else if (value === 'heading1') {
+                        style.fontSize = '24px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #4f81bd';
+                    } else if (value === 'heading2') {
+                        style.fontSize = '18px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #4f81bd';
+                    } else if (value === 'heading3') {
+                        style.fontSize = '14px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #a5b592';
+                    } else if (value === 'heading4') {
+                        style.fontSize = '12px'; style.fontWeight = 'bold'; style.color = '#000000';
+                    } else if (value === 'total') {
+                        style.fontWeight = 'bold'; style.border = 'none'; style.borderBottom = '3px double #4f81bd'; style.borderTop = '1px solid #4f81bd';
+                    } else if (value === 'title') {
+                        style.fontSize = '28px'; style.fontWeight = 'bold'; style.color = '#000000';
+                    }
+                    break;
                 case 'bold': style.fontWeight = targetState.bold; break;
                 case 'italic': style.fontStyle = targetState.italic; break;
                 case 'underline': style.textDecoration = targetState.underline; break;
@@ -412,13 +745,22 @@ const handleRibbonAction = ({ type, value }) => {
                 case 'textAlign': style.textAlign = value; break;
                 case 'valign': style.verticalAlign = value; break;
                 case 'wrapText': style.whiteSpace = style.whiteSpace === 'normal' ? 'nowrap' : 'normal'; break;
-                case 'border': style.border = style.border ? null : '1px solid #000'; break;
-                case 'format': style.numberFormat = value; break;
+                case 'border': applyBorder(style, value, { isTopEdge, isBottomEdge, isLeftEdge, isRightEdge }); break;
+                case 'format': if (value) style.numberFormat = value; break;
                 case 'precisionInc': style.decimals = (style.decimals !== undefined ? style.decimals : 2) + 1; break;
                 case 'precisionDec': style.decimals = Math.max(0, (style.decimals !== undefined ? style.decimals : 2) - 1); break;
                 case 'fontSizeInc': style.fontSize = (getNumericSize(style.fontSize) + 1) + 'px'; break;
                 case 'fontSizeDec': style.fontSize = Math.max(8, getNumericSize(style.fontSize) - 1) + 'px'; break;
-                case 'mergeCenter': style.textAlign = 'center'; style.verticalAlign = 'middle'; break;
+                case 'mergeCenter':
+                    style.textAlign = 'center'; style.verticalAlign = 'middle';
+                    // Если ячеек > 1 — делаем настоящий merge выделения
+                    if (rowsLen > 1 || colsLen > 1) {
+                        if (ri === 0 && ci === 0) {
+                            // Запускаем merge только один раз (для top-left)
+                            handleMergeCells();
+                        }
+                    }
+                    break;
                 case 'clear': row[cId] = ''; break;
             }
         });
@@ -452,9 +794,9 @@ const handleRangeClear = ({ targetRows, colFields }) => {
 const handleMenuAction = async (action) => {
     const params = cellContextMenu.value.params;
     if (!params) return;
-    const field = params.column.getColId();
-    const row = params.node.data;
-    if (!row) return;
+    const field = params.column?.getColId();
+    const row = params.node?.data;
+    if (!row || !field) return;
 
     // Если есть выделение, применяем действие к нему
     if (currentSelection.value && (action === 'clear' || action === 'bold' || action === 'italic')) {
@@ -471,8 +813,8 @@ const handleMenuAction = async (action) => {
             });
             return;
         }
-        // Для стилей вызываем handleRibbonAction
-        handleRibbonAction(action);
+        // Для стилей вызываем handleRibbonAction с правильной сигнатурой
+        handleRibbonAction({ type: action });
         return;
     }
 
@@ -518,51 +860,326 @@ const handleMenuAction = async (action) => {
                 row[field] = ''; 
                 syncChangesToServer([row]);
                 break;
-            case 'delete': if (confirm('Удалить содержимое ячейки?')) handleMenuAction('clear'); break;
+            case 'delete':
+                if (confirm('Удалить содержимое ячейки?')) {
+                    row[field] = '';
+                    syncChangesToServer([row]);
+                }
+                break;
         }
         activeCellInfo.value.style = { ...(row[field + '_style'] || {}) };
     } catch (err) { console.error(err); }
 };
 
-const columnDefs = computed(() => props.activeSheet?.columns || [{ field: 'A', headerName: 'A' }, { field: 'B', headerName: 'B' }, { field: 'C', headerName: 'C' }]);
+const columnDefs = computed(() => {
+    const baseCols = props.activeSheet?.columns;
+    const baseDefs = (Array.isArray(baseCols) && baseCols.length > 0)
+        ? baseCols.map(c => ({ ...c }))
+        : [];
+    const usedFields = new Set(baseDefs.map(c => c.field));
+    const result = [...baseDefs];
+    let i = 0;
+    const target = Math.min(extraColCount.value, MAX_COLS);
+    while (result.length < target && i < MAX_COLS) {
+        const letter = colLetter(i);
+        i++;
+        if (usedFields.has(letter)) continue;
+        result.push({ field: letter, headerName: letter });
+    }
+    // Запекаем сохранённые ширины прямо в colDef — переживут Inertia-обновления.
+    // flex: 0 ОБЯЗАТЕЛЬНО (defaultColDef.flex=1 иначе перетрёт width).
+    const widths = sheetMeta.value?.colWidths || {};
+    const freezeCol = !!sheetMeta.value?.freezeCol;
+    return result.map((c, idx) => {
+        let cd = { ...c };
+        const w = widths[c.field];
+        if (typeof w === 'number' && w > 20) {
+            cd = { ...cd, width: w, flex: 0, minWidth: 20, suppressSizeToFit: true };
+        }
+        if (freezeCol && idx === 0) cd.pinned = 'left';
+        return cd;
+    });
+});
+
+// Закрепление первой строки реализовано через rowData без её первой записи + pinnedTopRowData.
+const tableDataForGrid = computed(() => {
+    if (sheetMeta.value?.freezeRow) return tableData.value.slice(1);
+    return tableData.value;
+});
+const pinnedTopRowData = computed(() => {
+    if (sheetMeta.value?.freezeRow && tableData.value.length > 0) return [tableData.value[0]];
+    return [];
+});
+
+const handleToggleFreezeRow = () => { sheetMeta.value.freezeRow = !sheetMeta.value.freezeRow; };
+const handleToggleFreezeCol = () => { sheetMeta.value.freezeCol = !sheetMeta.value.freezeCol; };
+
+// --- Find & Replace ---
+const showFindReplace = ref(false);
+const findText = ref('');
+const replaceText = ref('');
+const findCaseSensitive = ref(false);
+const findLastPos = ref({ row: -1, col: -1 });
+const findStatus = ref('');
+
+const _matches = (cellVal, query) => {
+    if (cellVal === null || cellVal === undefined || cellVal === '') return false;
+    const a = String(cellVal);
+    const b = query;
+    return findCaseSensitive.value ? a.includes(b) : a.toLowerCase().includes(b.toLowerCase());
+};
+
+const findNext = () => {
+    const q = findText.value;
+    if (!q) { findStatus.value = 'Введите текст для поиска'; return; }
+    const cols = columnDefs.value;
+    const rows = tableData.value;
+    let { row: lr, col: lc } = findLastPos.value;
+    // Стартовая позиция — после последней найденной (или 0,0)
+    let startR = lr, startC = lc + 1;
+    if (startR < 0) { startR = 0; startC = 0; }
+    for (let r = startR; r < rows.length; r++) {
+        for (let c = (r === startR ? startC : 0); c < cols.length; c++) {
+            const f = cols[c].field;
+            if (_matches(rows[r][f], q)) {
+                findLastPos.value = { row: r, col: c };
+                tableApi.value?.ensureIndexVisible?.(r);
+                tableApi.value?.setFocusedCell?.(r, f);
+                findStatus.value = `Найдено: ${f}${r + 1}`;
+                return { row: r, col: c, field: f };
+            }
+        }
+    }
+    // Wrap around — начнём с начала
+    for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < cols.length; c++) {
+            if (r > startR || (r === startR && c >= startC)) break;
+            const f = cols[c].field;
+            if (_matches(rows[r][f], q)) {
+                findLastPos.value = { row: r, col: c };
+                tableApi.value?.ensureIndexVisible?.(r);
+                tableApi.value?.setFocusedCell?.(r, f);
+                findStatus.value = `Найдено (с начала): ${f}${r + 1}`;
+                return { row: r, col: c, field: f };
+            }
+        }
+    }
+    findStatus.value = 'Ничего не найдено';
+    return null;
+};
+
+const _isFormula = (v) => typeof v === 'string' && v.startsWith('=');
+
+const replaceCurrent = () => {
+    const q = findText.value;
+    if (!q) return;
+    const { row, col } = findLastPos.value;
+    if (row < 0 || col < 0) { findNext(); return; }
+    const f = columnDefs.value[col]?.field;
+    const r = tableData.value[row];
+    if (!r || !f) return;
+    if (_matches(r[f], q) && !_isFormula(r[f])) {
+        const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), findCaseSensitive.value ? 'g' : 'gi');
+        const oldVal = r[f];
+        r[f] = String(oldVal).replace(re, replaceText.value);
+        saveUndoState([{ dataRef: r, field: f, oldValue: oldVal, oldStyle: r[f + '_style'] ? JSON.parse(JSON.stringify(r[f + '_style'])) : null }]);
+        syncChangesToServer([r]);
+    }
+    findNext();
+};
+
+const replaceAll = () => {
+    const q = findText.value;
+    if (!q) return;
+    const cols = columnDefs.value;
+    const rows = tableData.value;
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), findCaseSensitive.value ? 'g' : 'gi');
+    const undoCh = [];
+    const affected = new Set();
+    let total = 0, skipped = 0;
+    for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < cols.length; c++) {
+            const f = cols[c].field;
+            const v = rows[r][f];
+            if (!_matches(v, q)) continue;
+            if (_isFormula(v)) { skipped++; continue; } // не трогаем формулы
+            undoCh.push({ dataRef: rows[r], field: f, oldValue: v, oldStyle: rows[r][f + '_style'] ? JSON.parse(JSON.stringify(rows[r][f + '_style'])) : null });
+            rows[r][f] = String(v).replace(re, replaceText.value);
+            affected.add(rows[r]);
+            total++;
+        }
+    }
+    if (total > 0) {
+        saveUndoState(undoCh);
+        syncChangesToServer(Array.from(affected));
+    }
+    findStatus.value = `Заменено: ${total}${skipped ? ` (пропущено формул: ${skipped})` : ''}`;
+};
+
+const openFindReplace = () => {
+    showFindReplace.value = true;
+    findLastPos.value = { row: -1, col: -1 };
+    findStatus.value = '';
+};
 const editingSheetId = ref(null);
 const newSheetName = ref('');
 const tabContextMenu = ref({ show: false, x: 0, y: 0, sheet: null });
 
 const startEditing = (sheet) => { editingSheetId.value = sheet.id; newSheetName.value = sheet.name; };
 const saveSheetName = (sheet) => {
-    if (newSheetName.value.trim() && newSheetName.value !== sheet.name) router.patch(route('sheets.update', sheet.id), { name: newSheetName.value });
-    editingSheetId.value = null;
+    const name = newSheetName.value.trim();
+    if (name && name !== sheet.name) {
+        router.patch(route('sheets.update', sheet.id), { name }, {
+            onSuccess: () => { editingSheetId.value = null; },
+            onError: () => { /* оставляем поле редактирования открытым */ }
+        });
+    } else {
+        editingSheetId.value = null;
+    }
 };
 const openTabContextMenu = (event, sheet) => { tabContextMenu.value = { show: true, x: event.clientX, y: event.clientY - 100, sheet: sheet }; };
 const closeContextMenu = () => { tabContextMenu.value.show = false; };
 const deleteSheet = (sheet) => { if (confirm(`Удалить лист "${sheet.name}"?`)) router.delete(route('sheets.destroy', sheet.id)); closeContextMenu(); };
 
-import ExcelContextMenu from '@/Components/ExcelContextMenu.vue';
 const cellContextMenu = ref({ show: false, x: 0, y: 0, params: null });
 const handleCellContextMenu = (params) => { cellContextMenu.value = { show: true, x: params.event.clientX, y: params.event.clientY, params: params }; };
 
-onMounted(() => {
-    window.addEventListener('keydown', (e) => {
-        if (!e.ctrlKey) return;
-        const k = e.key.toLowerCase();
-        // Undo / Redo
-        if (k === 'z' || k === 'я') { e.preventDefault(); undo(); return; }
-        if (k === 'y' || k === 'н') { e.preventDefault(); redo(); return; }
-        // Copy / Cut / Paste
-        if (k === 'c' || k === 'с') { e.preventDefault(); handleRibbonAction({ type: 'copy' }); return; }
-        if (k === 'x' || k === 'ч') { e.preventDefault(); handleRibbonAction({ type: 'cut' }); return; }
-        if (k === 'v' || k === 'м') { e.preventDefault(); handleRibbonAction({ type: 'paste' }); return; }
-        // Bold / Italic / Underline
-        if (k === 'b' || k === 'и') { e.preventDefault(); handleRibbonAction({ type: 'bold' }); return; }
-        if (k === 'i' || k === 'ш') { e.preventDefault(); handleRibbonAction({ type: 'italic' }); return; }
-        if (k === 'u' || k === 'г') { e.preventDefault(); handleRibbonAction({ type: 'underline' }); return; }
+const fileInput = ref(null);
+const triggerImport = () => { fileInput.value?.click(); };
+
+const handleFileChosen = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+        const wb = await readXlsxFile(file);
+        if (!wb.sheets || wb.sheets.length === 0) { alert('В файле не найдено листов'); return; }
+
+        const sheetCount = wb.sheets.length;
+        const ok = confirm(
+            `В файле найдено листов: ${sheetCount}.\n` +
+            `Будут созданы ${sheetCount} новых вкладок (текущие листы не затронутся).\n\nПродолжить?`
+        );
+        if (!ok) return;
+
+        const created = [];
+        let failed = 0;
+
+        for (let i = 0; i < wb.sheets.length; i++) {
+            const s = wb.sheets[i];
+            try {
+                const resp = await axios.post(route('sheets.importSheet'), {
+                    name: s.name || `Лист ${i + 1}`,
+                    columns: s.columnDefs || [],
+                    rows: (s.rowData || []).map((r, j) => ({ row_index: j, data: r }))
+                });
+                const newId = resp?.data?.id;
+                if (newId) {
+                    setMetaFor(newId, {
+                        merges: s.merges || [],
+                        validations: s.validations || {},
+                        colWidths: s.colWidths || {},
+                        rowHeights: s.rowHeights || {},
+                        hidden: !!s.hidden
+                    });
+                    created.push(newId);
+                } else {
+                    failed++;
+                }
+            } catch (err) {
+                console.error(`Ошибка импорта листа "${s.name}":`, err);
+                failed++;
+            }
+        }
+
+        if (created.length === 0) {
+            alert('Не удалось создать ни одного листа. Проверь консоль.');
+            return;
+        }
+
+        const msg = failed > 0
+            ? `Создано листов: ${created.length}. Ошибок: ${failed}.`
+            : `Создано листов: ${created.length}.`;
+        alert(msg);
+
+        // Переходим на первый созданный лист — Inertia подхватит обновлённый список вкладок
+        router.visit(route('dashboard', { sheet_id: created[0] }));
+    } catch (err) {
+        console.error(err);
+        alert('Не удалось прочитать файл: ' + (err?.message || err));
+    }
+};
+
+const exportXlsx = async () => {
+    const sheetsForExport = (props.sheets || []).map(s => {
+        const isActive = s.id === props.activeSheet?.id;
+        const colsBase = (s.columns && s.columns.length) ? s.columns : columnDefs.value;
+        const data = isActive ? tableData.value : [];
+        let m;
+        if (isActive) m = sheetMeta.value;
+        else {
+            try { m = JSON.parse(localStorage.getItem(`excel_sheet_meta_${s.id}`) || '{}'); }
+            catch (_) { m = {}; }
+        }
+        return {
+            name: s.name,
+            hidden: !!m.hidden,
+            columnDefs: colsBase,
+            rowData: data,
+            merges: m.merges || [],
+            validations: m.validations || {},
+            colWidths: m.colWidths || {},
+            rowHeights: m.rowHeights || {}
+        };
     });
+    try {
+        await writeXlsxFile('export.xlsx', sheetsForExport);
+    } catch (err) {
+        console.error(err);
+        alert('Не удалось сохранить файл: ' + (err?.message || err));
+    }
+};
+
+const handleGlobalKeydown = (e) => {
+    // Не перехватываем хоткеи, когда пользователь печатает в поле ввода
+    const tgt = e.target;
+    const inField = tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable);
+    if (!e.ctrlKey) return;
+    const k = e.key.toLowerCase();
+    // Undo / Redo — работают всегда
+    if (k === 'z' || k === 'я') { e.preventDefault(); undo(); return; }
+    if (k === 'y' || k === 'н') { e.preventDefault(); redo(); return; }
+    if (inField) return;
+    // Copy / Cut / Paste
+    if (k === 'c' || k === 'с') { e.preventDefault(); handleRibbonAction({ type: 'copy' }); return; }
+    if (k === 'x' || k === 'ч') { e.preventDefault(); handleRibbonAction({ type: 'cut' }); return; }
+    if (k === 'v' || k === 'м') { e.preventDefault(); handleRibbonAction({ type: 'paste' }); return; }
+    // Bold / Italic / Underline
+    if (k === 'b' || k === 'и') { e.preventDefault(); handleRibbonAction({ type: 'bold' }); return; }
+    if (k === 'i' || k === 'ш') { e.preventDefault(); handleRibbonAction({ type: 'italic' }); return; }
+    if (k === 'u' || k === 'г') { e.preventDefault(); handleRibbonAction({ type: 'underline' }); return; }
+    if (k === 'h' || k === 'р') { e.preventDefault(); openFindReplace(); return; }
+    if (k === 'f' || k === 'а') { e.preventDefault(); openFindReplace(); return; }
+};
+
+const handleGlobalClick = () => {
+    if (tabContextMenu.value.show) closeContextMenu();
+};
+
+onMounted(() => {
+    window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('click', handleGlobalClick);
+});
+
+onUnmounted(() => {
+    window.removeEventListener('keydown', handleGlobalKeydown);
+    window.removeEventListener('click', handleGlobalClick);
 });
 </script>
 
 <template>
     <Head title="Excel Online" />
+    <input type="file" ref="fileInput" accept=".xlsx,.xls" class="hidden" @change="handleFileChosen" />
     <div class="h-screen w-screen flex flex-col overflow-hidden bg-[#f3f2f1] text-[#323130] font-sans">
         <div class="bg-[#217346] text-white px-4 py-1 flex items-center justify-between text-xs h-9 shrink-0">
             <div class="flex items-center gap-4">
@@ -623,10 +1240,15 @@ onMounted(() => {
             </div>
 
             <div class="overflow-hidden relative bg-white" style="height: calc(100vh - 200px);">
-                <ExcelTable v-if="activeSheet" :rowData="tableData" :columnDefs="columnDefs"
+                <ExcelTable v-if="activeSheet" :rowData="tableDataForGrid" :columnDefs="columnDefs"
+                    :pinnedTopRowData="pinnedTopRowData" :freezeRow="!!sheetMeta.freezeRow"
+                    :merges="sheetMeta.merges" :validations="sheetMeta.validations"
+                    :colWidths="sheetMeta.colWidths" :rowHeights="sheetMeta.rowHeights"
                     @cell-value-changed="handleCellValueChanged" @cell-focused="handleCellFocused"
-                    @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged" 
-                    @range-clear="handleRangeClear" @ready="handleTableReady" />
+                    @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged"
+                    @range-clear="handleRangeClear" @ready="handleTableReady"
+                    @grow-rows="handleGrowRows" @grow-cols="handleGrowCols"
+                    @column-resized="handleColumnResized" @row-resized="handleRowResized" />
                 <ExcelContextMenu v-if="cellContextMenu.show" :x="cellContextMenu.x" :y="cellContextMenu.y" :cellData="cellContextMenu.params"
                     @close="cellContextMenu.show = false" @action="handleMenuAction" />
             </div>
@@ -634,23 +1256,72 @@ onMounted(() => {
             <div class="flex flex-col select-none shrink-0 bg-[#f3f2f1]">
                 <div class="bg-[#f3f2f1] border-t border-gray-300 flex items-center h-[32px] overflow-hidden">
                     <div class="flex-1 flex items-center overflow-x-auto no-scrollbar h-full">
-                        <div v-for="(sheet, index) in sheets" :key="sheet.id" class="h-full flex items-center">
-                            <div class="h-full flex items-center relative transition-colors" :class="sheet.id === activeSheet?.id ? 'bg-white' : 'bg-transparent hover:bg-gray-200'" @contextmenu.prevent="openTabContextMenu($event, sheet)">
+                        <div v-for="(sheet, index) in visibleSheets" :key="sheet.id" class="h-full flex items-center">
+                            <div class="h-full flex items-center relative transition-colors" :class="[sheet.id === activeSheet?.id ? 'bg-white' : 'bg-transparent hover:bg-gray-200', isSheetHidden(sheet.id) ? 'opacity-50' : '']" @contextmenu.prevent="openTabContextMenu($event, sheet)">
                                 <input v-if="editingSheetId === sheet.id" v-model="newSheetName" @blur="saveSheetName(sheet)" @keyup.enter="saveSheetName(sheet)" class="border-none focus:ring-0 outline-none px-4 py-0 w-24 text-[11px] font-bold bg-white h-full" v-focus />
                                 <button v-else @click="router.visit(route('dashboard', { sheet_id: sheet.id }))" @dblclick="startEditing(sheet)" class="px-5 h-full text-[11px] whitespace-nowrap" :class="sheet.id === activeSheet?.id ? 'text-[#217346] font-bold shadow-[0_-2px_0_0_#217346_inset]' : 'text-gray-700'">
-                                    {{ sheet.name }}
+                                    {{ sheet.name }}<span v-if="isSheetHidden(sheet.id)" class="ml-1 text-[9px] text-gray-500">(скрыт)</span>
                                 </button>
                             </div>
-                            <div v-if="index < sheets.length - 1 && sheet.id !== activeSheet?.id && sheets[index+1].id !== activeSheet?.id" class="h-4 w-[1px] bg-gray-400"></div>
+                            <div v-if="index < visibleSheets.length - 1 && sheet.id !== activeSheet?.id && visibleSheets[index+1].id !== activeSheet?.id" class="h-4 w-[1px] bg-gray-400"></div>
                         </div>
-                        <button @click="router.post(route('sheets.store'))" class="ml-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-300 text-gray-500 transition-colors"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg></button>
+                        <button @click="router.post(route('sheets.store'))" class="ml-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-300 text-gray-500 transition-colors" title="Добавить лист"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg></button>
+                        <button @click="showHidden = !showHidden" class="ml-2 px-2 h-6 flex items-center justify-center rounded hover:bg-gray-300 text-gray-600 text-[10px]" title="Показать скрытые листы">{{ showHidden ? 'Скрыть скрытые' : 'Показать скрытые' }}</button>
                     </div>
                 </div>
                 <div class="bg-[#f3f2f1] border-t border-gray-200 flex items-center justify-between h-[22px] px-3 text-[11px] text-gray-600">
                     <div class="flex items-center gap-4"><span>Ввод</span><div class="w-[1px] h-3 bg-gray-300"></div><span>Доступность: проверка</span></div>
+                    <div class="flex items-center gap-4 flex-1 justify-end pr-4">
+                        <template v-if="selectionStats && selectionStats.count > 0">
+                            <span v-if="selectionStats.numCount > 0">Среднее: <b>{{ fmt(selectionStats.avg) }}</b></span>
+                            <span>Количество: <b>{{ selectionStats.count }}</b></span>
+                            <span v-if="selectionStats.numCount > 0 && selectionStats.numCount !== selectionStats.count">Числовых: <b>{{ selectionStats.numCount }}</b></span>
+                            <span v-if="selectionStats.numCount > 0">Мин: <b>{{ fmt(selectionStats.min) }}</b></span>
+                            <span v-if="selectionStats.numCount > 0">Макс: <b>{{ fmt(selectionStats.max) }}</b></span>
+                            <span v-if="selectionStats.numCount > 0">Сумма: <b>{{ fmt(selectionStats.sum) }}</b></span>
+                        </template>
+                    </div>
                     <div class="flex items-center gap-4"><span>70%</span><button>－</button><div class="w-24 h-[1px] bg-gray-400 relative"><div class="absolute left-[70%] top-[-5px] w-[2px] h-[11px] bg-gray-600"></div></div><button>＋</button></div>
                 </div>
             </div>
+        </div>
+
+        <!-- Find & Replace -->
+        <div v-if="showFindReplace" class="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/20" @click.self="showFindReplace = false">
+            <div class="bg-white rounded-lg shadow-xl w-[420px] p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="font-bold text-sm">Найти и заменить</h3>
+                    <button @click="showFindReplace = false" class="text-gray-500 hover:text-black">&times;</button>
+                </div>
+                <div class="space-y-2">
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs w-16 text-gray-600">Найти:</label>
+                        <input v-model="findText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#217346]" @keyup.enter="findNext()" />
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs w-16 text-gray-600">Заменить:</label>
+                        <input v-model="replaceText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#217346]" />
+                    </div>
+                    <label class="flex items-center gap-2 text-xs text-gray-700">
+                        <input type="checkbox" v-model="findCaseSensitive" /> Учитывать регистр
+                    </label>
+                    <div class="text-xs text-gray-500 min-h-[16px]">{{ findStatus }}</div>
+                </div>
+                <div class="flex gap-2 mt-3 justify-end">
+                    <button @click="findNext()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Найти далее</button>
+                    <button @click="replaceCurrent()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Заменить</button>
+                    <button @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">Заменить все</button>
+                    <button @click="showFindReplace = false" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Закрыть</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Контекстное меню вкладок -->
+        <div v-if="tabContextMenu.show" :style="{ top: tabContextMenu.y + 'px', left: tabContextMenu.x + 'px' }"
+             class="fixed bg-white border border-gray-300 shadow-lg z-50 text-sm" @click.stop>
+            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="startEditing(tabContextMenu.sheet); closeContextMenu()">Переименовать</div>
+            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="handleToggleHideSheet(tabContextMenu.sheet)">{{ isSheetHidden(tabContextMenu.sheet?.id) ? 'Показать' : 'Скрыть' }}</div>
+            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer text-red-600" @click="deleteSheet(tabContextMenu.sheet)">Удалить</div>
         </div>
     </div>
 </template>

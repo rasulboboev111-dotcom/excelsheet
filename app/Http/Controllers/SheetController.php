@@ -63,6 +63,54 @@ class SheetController extends Controller
         return redirect()->route('dashboard', ['sheet_id' => $sheet->id]);
     }
 
+    /**
+     * JSON-эндпоинт для импорта одного листа из XLSX.
+     * Принимает {name, columns, rows[{row_index, data}]} и возвращает JSON
+     * с id/name/columns созданного листа — позволяет фронту атомарно создать
+     * лист с данными и сразу записать его мету в localStorage.
+     */
+    public function importSheet(Request $request)
+    {
+        $payload = $request->validate([
+            'name'            => 'required|string|max:255',
+            'columns'         => 'sometimes|array',
+            'columns.*.field' => 'required_with:columns|string|max:32',
+            'rows'            => 'sometimes|array',
+            'rows.*.row_index'=> 'required_with:rows|integer|min:0',
+            'rows.*.data'     => 'sometimes|array',
+        ]);
+
+        $columns = $payload['columns'] ?? [];
+        if (empty($columns)) {
+            $columns = [
+                ['field' => 'A', 'headerName' => 'A'],
+                ['field' => 'B', 'headerName' => 'B'],
+                ['field' => 'C', 'headerName' => 'C'],
+            ];
+        }
+
+        $sheet = Sheet::create([
+            'name'    => $payload['name'],
+            'user_id' => auth()->id(),
+            'order'   => (int) Sheet::max('order') + 1,
+            'columns' => $columns,
+        ]);
+
+        foreach ($payload['rows'] ?? [] as $row) {
+            SheetData::create([
+                'sheet_id'  => $sheet->id,
+                'row_index' => (int) $row['row_index'],
+                'row_data'  => $row['data'] ?? [],
+            ]);
+        }
+
+        return response()->json([
+            'id'      => $sheet->id,
+            'name'    => $sheet->name,
+            'columns' => $sheet->columns,
+        ]);
+    }
+
     public function update(Request $request, Sheet $sheet)
     {
         $sheet->update($request->validate([

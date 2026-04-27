@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 
 const props = defineProps({
     activeCell: Object
@@ -26,12 +26,76 @@ const standardColors = ['#C00000', '#FF0000', '#FFC000', '#FFFF00', '#92D050', '
 const activePicker = ref(null);
 const currentBgColor = ref('#ffff00');
 const currentTextColor = ref('#ff0000');
+const currentBorderType = ref('all');
+const dropdownPos = ref({ top: 0, left: 0 });
+
+const borderOptions = [
+    { type: 'bottom',          label: 'Нижняя граница' },
+    { type: 'top',             label: 'Верхняя граница' },
+    { type: 'left',            label: 'Левая граница' },
+    { type: 'right',           label: 'Правая граница' },
+    { type: 'none',            label: 'Нет границы' },
+    { type: 'all',             label: 'Все границы' },
+    { type: 'outside',         label: 'Внешние границы' },
+    { type: 'thickBox',        label: 'Толстые внешние границы' },
+    { type: 'bottomDouble',    label: 'Двойная нижняя граница' },
+    { type: 'bottomThick',     label: 'Толстая нижняя граница' },
+    { type: 'topBottom',       label: 'Верхняя и нижняя границы' },
+    { type: 'topThickBottom',  label: 'Верхняя и толстая нижняя' },
+    { type: 'topDoubleBottom', label: 'Верхняя и двойная нижняя' }
+];
+
+const borderIcon = (type) => {
+    const f = '#fff', g = '#bbb', b = '#000';
+    const box = `<rect x="3" y="3" width="14" height="14" fill="${f}" stroke="${g}" stroke-width="1"/>`;
+    const grid = `<line x1="3" y1="10" x2="17" y2="10" stroke="${g}" stroke-width="0.5"/><line x1="10" y1="3" x2="10" y2="17" stroke="${g}" stroke-width="0.5"/>`;
+    const lines = {
+        bottom:          `<line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="2"/>`,
+        top:             `<line x1="3" y1="3"  x2="17" y2="3"  stroke="${b}" stroke-width="2"/>`,
+        left:            `<line x1="3" y1="3"  x2="3"  y2="17" stroke="${b}" stroke-width="2"/>`,
+        right:           `<line x1="17" y1="3" x2="17" y2="17" stroke="${b}" stroke-width="2"/>`,
+        none:            ``,
+        all:             `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="1.5"/><line x1="3" y1="10" x2="17" y2="10" stroke="${b}" stroke-width="1"/><line x1="10" y1="3" x2="10" y2="17" stroke="${b}" stroke-width="1"/>`,
+        outside:         `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="1.5"/>`,
+        thickBox:        `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="2.5"/>`,
+        bottomDouble:    `<line x1="3" y1="15" x2="17" y2="15" stroke="${b}" stroke-width="1"/><line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="1"/>`,
+        bottomThick:     `<line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="3"/>`,
+        topBottom:       `<line x1="3" y1="3" x2="17" y2="3" stroke="${b}" stroke-width="1.5"/><line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="1.5"/>`,
+        topThickBottom:  `<line x1="3" y1="3" x2="17" y2="3" stroke="${b}" stroke-width="1"/><line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="3"/>`,
+        topDoubleBottom: `<line x1="3" y1="3" x2="17" y2="3" stroke="${b}" stroke-width="1"/><line x1="3" y1="15" x2="17" y2="15" stroke="${b}" stroke-width="1"/><line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="1"/>`
+    };
+    return `<svg width="20" height="20" viewBox="0 0 20 20">${box}${grid}${lines[type] || ''}</svg>`;
+};
+
+const selectBorder = (type) => {
+    currentBorderType.value = type;
+    handleAction('border', type);
+    activePicker.value = null;
+};
+
+const activeFontSize = computed(() => {
+    const fs = props.activeCell?.style?.fontSize;
+    const n = parseInt((fs || '11px').replace('px', ''));
+    return isNaN(n) ? 11 : n;
+});
+const activeFontFamily = computed(() => props.activeCell?.style?.fontFamily || 'Calibri');
 
 const bgNativePicker = ref(null);
 const textNativePicker = ref(null);
 
-const togglePicker = (type) => {
-    activePicker.value = activePicker.value === type ? null : type;
+const togglePicker = (type, event) => {
+    if (activePicker.value === type) { activePicker.value = null; return; }
+    if (event && event.currentTarget) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const dropdownWidth = type === 'cellStyles' ? 760 : (type === 'border' ? 240 : 200);
+        let left = rect.left;
+        if (left + dropdownWidth > window.innerWidth - 10) {
+            left = Math.max(10, window.innerWidth - dropdownWidth - 10);
+        }
+        const top = rect.bottom + 2;
+        dropdownPos.value = { top, left };
+    }
+    activePicker.value = type;
 };
 
 const triggerNativePicker = (type) => {
@@ -50,14 +114,28 @@ const selectColor = (color) => {
     activePicker.value = null;
 };
 
+const applyCellStyle = (styleName) => {
+    handleAction('applyCellStyle', styleName);
+    activePicker.value = null;
+};
+
 const closePickers = (e) => {
     if (!e.target.closest('.color-picker-container')) {
         activePicker.value = null;
     }
 };
 
-onMounted(() => document.addEventListener('click', closePickers));
-onUnmounted(() => document.removeEventListener('click', closePickers));
+const closeOnScroll = () => { activePicker.value = null; };
+onMounted(() => {
+    document.addEventListener('click', closePickers);
+    window.addEventListener('scroll', closeOnScroll, true);
+    window.addEventListener('resize', closeOnScroll);
+});
+onUnmounted(() => {
+    document.removeEventListener('click', closePickers);
+    window.removeEventListener('scroll', closeOnScroll, true);
+    window.removeEventListener('resize', closeOnScroll);
+});
 
 // SVG Icons as components or strings
 const icons = {
@@ -67,8 +145,6 @@ const icons = {
     brush: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 13L10 6L13 3M3 13L2 14M3 13L4 12" stroke="#8B4513" stroke-width="2"/><rect x="9" y="3" width="4" height="4" fill="#FFD700"/></svg>`,
     border: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="3" width="12" height="12" stroke="#333" stroke-width="1.5"/><path d="M3 9H15M9 3V15" stroke="#333" stroke-width="1"/></svg>`,
     bucket: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 10L9 5L14 10L9 15L4 10Z" fill="#ffff00" stroke="#333"/><path d="M14 10L16 12L15 13L13 11" stroke="#333"/></svg>`,
-    wrap: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 6H20M4 12H14M4 18H10" stroke="#333" stroke-width="2"/><path d="M16 12L18 14L20 12" stroke="#217346" stroke-width="2"/></svg>`,
-    merge: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="8" stroke="#333" stroke-width="1.5"/><path d="M8 12H16M8 12L10 10M8 12L10 14M16 12L14 10M16 12L14 14" stroke="#217346" stroke-width="1.5"/></svg>`,
     sum: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4H12L7 8L12 12H4" stroke="#333" stroke-width="2" stroke-linejoin="round"/></svg>`,
     clear: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 6h10l-1 8H4L3 6z" fill="#fde7e9" stroke="#a4262c"/><path d="M2 4h12M6 4v2M10 4v2" stroke="#a4262c" stroke-width="1.2"/></svg>`,
     sort: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4L2 6M4 4L6 6M4 4V12M10 4H14M10 8H13M10 12H12" stroke="#333" stroke-width="1.5"/></svg>`,
@@ -99,7 +175,7 @@ const icons = {
 <template>
     <div class="excel-ribbon">
         <div class="ribbon-tabs">
-            <div class="tab file-tab">Файл</div>
+            <div class="tab file-tab" @click="handleAction('import')" title="Открыть .xlsx">Файл</div>
             <div class="tab active">Главная</div>
             <div class="tab">Вставка</div>
             <div class="tab">Разметка страницы</div>
@@ -111,6 +187,37 @@ const icons = {
         </div>
 
         <div class="ribbon-content">
+            <!-- Группа: Файл (Импорт/Экспорт) -->
+            <div class="ribbon-group">
+                <div class="group-inner" style="flex-direction: column; gap: 2px;">
+                    <button class="btn-mini" @click="handleAction('import')" title="Открыть .xlsx">
+                        <span style="font-size:14px;">📂</span> Открыть
+                    </button>
+                    <button class="btn-mini" @click="handleAction('export')" title="Сохранить как .xlsx">
+                        <span style="font-size:14px;">💾</span> Скачать .xlsx
+                    </button>
+                    <button class="btn-mini" @click="handleAction('mergeCells')" title="Объединить выделенные ячейки">
+                        <span style="font-size:14px;">⬌</span> Объединить
+                    </button>
+                    <button class="btn-mini" @click="handleAction('unmergeCells')" title="Разъединить ячейки">
+                        <span style="font-size:14px;">⬍</span> Разъединить
+                    </button>
+                    <button class="btn-mini" @click="handleAction('setValidation')" title="Список значений для колонки">
+                        <span style="font-size:14px;">▼</span> Проверка данных
+                    </button>
+                    <button class="btn-mini" @click="handleAction('freezeRow')" title="Закрепить первую строку">
+                        <span style="font-size:14px;">▤</span> Закрепить строку
+                    </button>
+                    <button class="btn-mini" @click="handleAction('freezeCol')" title="Закрепить первую колонку">
+                        <span style="font-size:14px;">▥</span> Закрепить колонку
+                    </button>
+                    <button class="btn-mini" @click="handleAction('findReplace')" title="Найти и заменить (Ctrl+H)">
+                        <span style="font-size:14px;">🔍</span> Найти и заменить
+                    </button>
+                </div>
+                <div class="group-label">Файл / Данные</div>
+            </div>
+
             <!-- Группа: Буфер обмена -->
             <div class="ribbon-group">
                 <div class="group-inner">
@@ -131,11 +238,11 @@ const icons = {
             <div class="ribbon-group">
                 <div class="group-inner font-group">
                     <div class="row">
-                        <select class="font-select" @change="handleAction('fontFamily', $event.target.value)">
+                        <select class="font-select" :value="activeFontFamily" @change="handleAction('fontFamily', $event.target.value)">
                             <option v-for="f in fonts" :key="f" :value="f">{{ f }}</option>
                         </select>
-                        <select class="size-select" @change="handleAction('fontSize', $event.target.value)">
-                            <option v-for="s in [8,9,10,11,12,14,16,18,20,22,24,26,28,36,48,72]" :key="s" :value="s" :selected="s==11">{{ s }}</option>
+                        <select class="size-select" :value="activeFontSize" @change="handleAction('fontSize', $event.target.value)">
+                            <option v-for="s in [8,9,10,11,12,14,16,18,20,22,24,26,28,36,48,72]" :key="s" :value="s">{{ s }}</option>
                         </select>
                         <button class="btn-tool" @click="handleAction('fontSizeInc')">A<sup>+</sup></button>
                         <button class="btn-tool" @click="handleAction('fontSizeDec')">A<sup>-</sup></button>
@@ -144,7 +251,24 @@ const icons = {
                         <button class="btn-tool bold" :class="{ active: activeCell?.style?.fontWeight === 'bold' }" @click="handleAction('bold')">Ж</button>
                         <button class="btn-tool italic" :class="{ active: activeCell?.style?.fontStyle === 'italic' }" @click="handleAction('italic')">К</button>
                         <button class="btn-tool underline" :class="{ active: activeCell?.style?.textDecoration === 'underline' }" @click="handleAction('underline')"><u>Ч</u></button>
-                        <button class="btn-tool border" @click="handleAction('border')" v-html="icons.border"></button>
+                        <div class="color-picker-container">
+                            <div class="split-btn">
+                                <button class="btn-tool" @click="handleAction('border', currentBorderType)" v-html="borderIcon(currentBorderType)"></button>
+                                <button class="btn-tool drop-btn" @click.stop="togglePicker('border', $event)">
+                                    <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg>
+                                </button>
+                            </div>
+                            <div class="color-dropdown border-dropdown" v-if="activePicker === 'border'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px' }" @click.stop>
+                                <div class="palette-title">Границы</div>
+                                <div class="border-list">
+                                    <div v-for="opt in borderOptions" :key="opt.type"
+                                         class="border-option" @click="selectBorder(opt.type)">
+                                        <span class="border-icon" v-html="borderIcon(opt.type)"></span>
+                                        <span class="border-label">{{ opt.label }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         
                         <div class="color-picker-container">
                             <div class="split-btn">
@@ -152,11 +276,11 @@ const icons = {
                                     <div v-html="icons.bucket"></div>
                                     <div class="c-bar" :style="{ backgroundColor: currentBgColor === 'transparent' ? '#fff' : currentBgColor }"></div>
                                 </button>
-                                <button class="btn-tool drop-btn" @click.stop="togglePicker('bgColor')">
+                                <button class="btn-tool drop-btn" @click.stop="togglePicker('bgColor', $event)">
                                     <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg>
                                 </button>
                             </div>
-                            <div class="color-dropdown" v-if="activePicker === 'bgColor'" @click.stop>
+                            <div class="color-dropdown" v-if="activePicker === 'bgColor'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px' }" @click.stop>
                                 <div class="palette-title">Цвета темы</div>
                                 <div class="palette-grid">
                                     <div v-for="(col, cIdx) in themeColors[0]" :key="'bg-theme-col-'+cIdx" class="palette-col">
@@ -186,11 +310,11 @@ const icons = {
                                     <span class="a-text">A</span>
                                     <div class="c-bar" :style="{ backgroundColor: currentTextColor }"></div>
                                 </button>
-                                <button class="btn-tool drop-btn" @click.stop="togglePicker('color')">
+                                <button class="btn-tool drop-btn" @click.stop="togglePicker('color', $event)">
                                     <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg>
                                 </button>
                             </div>
-                            <div class="color-dropdown" v-if="activePicker === 'color'" @click.stop>
+                            <div class="color-dropdown" v-if="activePicker === 'color'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px' }" @click.stop>
                                 <div class="palette-title">Цвета темы</div>
                                 <div class="palette-grid">
                                     <div v-for="(col, cIdx) in themeColors[0]" :key="'text-theme-col-'+cIdx" class="palette-col">
@@ -280,10 +404,44 @@ const icons = {
                         <div v-html="icons.tableStyle"></div>
                         <span>Форматировать как таблицу</span>
                     </button>
-                    <button class="btn-style" @click="handleAction('cellStyles')">
-                        <div v-html="icons.cellStyle"></div>
-                        <span>Стили ячеек</span>
-                    </button>
+                    <div class="color-picker-container cell-styles-container">
+                        <button class="btn-style drop-btn-down" @click.stop="togglePicker('cellStyles', $event)">
+                            <div v-html="icons.cellStyle"></div>
+                            <span>Стили ячеек <svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3L5 6L8 3" stroke="#333" fill="none"/></svg></span>
+                        </button>
+                        
+                        <div class="color-dropdown cell-styles-dropdown" v-if="activePicker === 'cellStyles'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px' }" @click.stop>
+                            <div class="palette-title">Хороший, плохой и нейтральный</div>
+                            <div class="style-grid-4">
+                                <div class="cell-style-item" style="color:#000; border:1px solid #c8c8c8" @click="applyCellStyle('normal')">Обычный</div>
+                                <div class="cell-style-item" style="background:#ffeb9c; color:#9c6500" @click="applyCellStyle('neutral')">Нейтральный</div>
+                                <div class="cell-style-item" style="background:#ffc7ce; color:#9c0006" @click="applyCellStyle('bad')">Плохой</div>
+                                <div class="cell-style-item" style="background:#c6efce; color:#006100" @click="applyCellStyle('good')">Хороший</div>
+                            </div>
+
+                            <div class="palette-title">Данные и модель</div>
+                            <div class="style-grid-4">
+                                <div class="cell-style-item" style="background:#f2dddc; color:#fa7d00; border:1px solid #7f7f7f" @click="applyCellStyle('input')">Ввод</div>
+                                <div class="cell-style-item" style="background:#f2f2f2; color:#3f3f3f; border:1px solid #3f3f3f; font-weight:bold" @click="applyCellStyle('output')">Вывод</div>
+                                <div class="cell-style-item" style="color:#fa7d00; border:1px solid #7f7f7f; font-weight:bold" @click="applyCellStyle('calc')">Вычисление</div>
+                                <div class="cell-style-item" style="background:#a5a5a5; color:#fff; border:2px solid #3f3f3f; font-weight:bold" @click="applyCellStyle('check')">Контрольная...</div>
+                                <div class="cell-style-item" style="background:#ffffcc; color:#000; border:1px solid #b2b2b2" @click="applyCellStyle('note')">Примечание</div>
+                                <div class="cell-style-item" style="color:#fa7d00; border-bottom:2px solid #ff8001; padding-bottom: 2px;" @click="applyCellStyle('linked')">Связанная ячейка</div>
+                                <div class="cell-style-item" style="color:#ff0000" @click="applyCellStyle('warning')">Текст преду...</div>
+                                <div class="cell-style-item" style="color:#7f7f7f; font-style:italic" @click="applyCellStyle('explain')">Пояснение</div>
+                            </div>
+
+                            <div class="palette-title">Названия и заголовки</div>
+                            <div class="style-grid-4" style="align-items: end;">
+                                <div class="cell-style-item" style="font-size:20px; font-weight:bold; color:#000;" @click="applyCellStyle('heading1')">Заголовок 1</div>
+                                <div class="cell-style-item" style="font-size:16px; font-weight:bold; color:#000; border-bottom:2px solid #4f81bd; padding-bottom:2px;" @click="applyCellStyle('heading2')">Заголовок 2</div>
+                                <div class="cell-style-item" style="font-size:14px; font-weight:bold; color:#000; border-bottom:2px solid #a5b592; padding-bottom:2px;" @click="applyCellStyle('heading3')">Заголовок 3</div>
+                                <div class="cell-style-item" style="font-size:12px; font-weight:bold; color:#000;" @click="applyCellStyle('heading4')">Заголовок 4</div>
+                                <div class="cell-style-item" style="font-weight:bold; color:#000; border-bottom:3px double #4f81bd; border-top:1px solid #4f81bd; padding: 2px 8px;" @click="applyCellStyle('total')">Итог</div>
+                                <div class="cell-style-item" style="font-size:24px; font-weight:bold; color:#000;" @click="applyCellStyle('title')">Название</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="group-label">Стили</div>
             </div>
@@ -381,7 +539,25 @@ const icons = {
     height: 98px;
     padding: 2px;
     background: #f3f2f1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #c8c6c4 transparent;
 }
+.ribbon-content::-webkit-scrollbar { height: 6px; }
+.ribbon-content::-webkit-scrollbar-track { background: transparent; }
+.ribbon-content::-webkit-scrollbar-thumb {
+    background: #c8c6c4;
+    border-radius: 3px;
+}
+.ribbon-content::-webkit-scrollbar-thumb:hover { background: #a19f9d; }
+
+.ribbon-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+.ribbon-tabs::-webkit-scrollbar { display: none; }
 
 .ribbon-group {
     display: flex;
@@ -429,7 +605,7 @@ const icons = {
 .btn-mini { 
     background: transparent; border: 1px solid transparent; 
     text-align: left; font-size: 11px; padding: 1px 4px; cursor: pointer;
-    display: flex; align-items: center; gap: 4px;
+    display: flex; align-items: center; gap: 4px; white-space: nowrap;
 }
 .btn-mini:hover { background: #edebe9; }
 
@@ -577,14 +753,12 @@ const icons = {
     min-width: 14px;
 }
 .color-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
+    position: fixed;
     background: #fff;
     border: 1px solid #ccc;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     padding: 8px;
-    z-index: 1000;
+    z-index: 10000;
     width: 190px;
 }
 .palette-title {
@@ -641,5 +815,71 @@ const icons = {
     border: none;
     padding: 0;
     pointer-events: none;
+}
+/* Border Dropdown */
+.border-dropdown {
+    width: 240px;
+    padding: 8px;
+}
+.border-list {
+    display: flex;
+    flex-direction: column;
+}
+.border-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.border-option:hover {
+    background: #f3f2f1;
+}
+.border-icon {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.border-label {
+    flex: 1;
+    color: #323130;
+}
+
+/* Cell Styles Dropdown */
+.cell-styles-dropdown {
+    width: 760px;
+    padding: 16px;
+}
+.style-grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.cell-style-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    height: 100%;
+    min-height: 36px;
+    font-size: 13px;
+    background: transparent;
+    white-space: nowrap;
+}
+.cell-style-item:hover {
+    outline: 2px solid #f29900;
+}
+.palette-title {
+    font-size: 13px;
+    color: #444;
+    margin: 0 0 8px 0;
+    font-weight: 600;
+    border-bottom: 1px solid #d2d0ce;
+    padding-bottom: 4px;
 }
 </style>
