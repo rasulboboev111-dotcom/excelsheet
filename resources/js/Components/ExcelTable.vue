@@ -511,8 +511,167 @@ const findCoveringMerge = (rowIndex, colIndex) => {
     return null;
 };
 
+// --- Русская локализация UI AG Grid (фильтры, меню колонок, общие надписи) ---
+const localeText = {
+    // Кнопки внизу попапа фильтра
+    applyFilter: 'Применить',
+    resetFilter: 'Сбросить',
+    clearFilter: 'Очистить',
+    cancelFilter: 'Отмена',
+
+    // Заголовок и поиск в попапе фильтра
+    filterOoo: 'Фильтр…',
+    searchOoo: 'Поиск…',
+    selectAll: 'Выбрать всё',
+    selectAllSearchResults: 'Выбрать всё (результаты поиска)',
+    blanks: '(Пустые)',
+    noMatches: 'Совпадений нет',
+
+    // Текстовый фильтр
+    contains: 'Содержит',
+    notContains: 'Не содержит',
+    startsWith: 'Начинается с',
+    endsWith: 'Заканчивается на',
+
+    // Общие операторы
+    equals: 'Равно',
+    notEqual: 'Не равно',
+    blank: 'Пусто',
+    notBlank: 'Не пусто',
+    empty: 'Выберите условие',
+
+    // Числовые / датные операторы
+    lessThan: 'Меньше',
+    lessThanOrEqual: 'Меньше или равно',
+    greaterThan: 'Больше',
+    greaterThanOrEqual: 'Больше или равно',
+    inRange: 'В диапазоне',
+    inRangeStart: 'От',
+    inRangeEnd: 'До',
+
+    // И / Или
+    andCondition: 'И',
+    orCondition: 'Или',
+
+    // Меню колонки (при клике на «гамбургер»)
+    pinColumn: 'Закрепить колонку',
+    pinLeft: 'Слева',
+    pinRight: 'Справа',
+    noPin: 'Не закреплять',
+    autosizeThiscolumn: 'Авторазмер этой колонки',
+    autosizeAllColumns: 'Авторазмер всех колонок',
+    resetColumns: 'Сбросить колонки',
+    columns: 'Колонки',
+
+    // Шапка / прочее
+    loadingOoo: 'Загрузка…',
+    noRowsToShow: 'Нет данных',
+    page: 'Страница',
+    of: 'из',
+    to: 'до',
+    next: 'Следующая',
+    last: 'Последняя',
+    first: 'Первая',
+    previous: 'Предыдущая',
+};
+
+// --- Авто-определение типа фильтра по содержимому колонки (Excel-style) ---
+// Сэмплируем до 100 значений и решаем: число / дата / текст.
+const detectFilterType = (field) => {
+    const data = props.rowData || [];
+    if (data.length === 0) return 'text';
+    const limit = Math.min(100, data.length);
+    let total = 0, nums = 0, dates = 0;
+    for (let i = 0; i < limit; i++) {
+        const raw = data[i]?.[field];
+        if (raw === null || raw === undefined || raw === '') continue;
+        total++;
+        const s = String(raw).trim();
+        if (s.startsWith('=')) continue; // формулы не считаем при определении типа
+        if (/^-?\d+([.,]\d+)?$/.test(s)) nums++;
+        else if (/^\d{1,4}[./-]\d{1,2}[./-]\d{1,4}$/.test(s)) dates++;
+    }
+    if (total === 0) return 'text';
+    if (dates / total > 0.6) return 'date';
+    if (nums / total > 0.6) return 'number';
+    return 'text';
+};
+
+const filterConfigFor = (field) => {
+    const t = detectFilterType(field);
+    if (t === 'number') {
+        return {
+            filter: 'agNumberColumnFilter',
+            filterParams: {
+                filterOptions: ['equals', 'notEqual', 'lessThan', 'lessThanOrEqual',
+                                'greaterThan', 'greaterThanOrEqual', 'inRange', 'blank', 'notBlank'],
+                defaultOption: 'equals',
+                buttons: ['clear', 'reset', 'apply'],
+                closeOnApply: true,
+                debounceMs: 200,
+                filterPlaceholder: 'Введите число…',
+                numberParser: (text) => (text == null || text === '') ? null : parseFloat(String(text).replace(',', '.')),
+            }
+        };
+    }
+    if (t === 'date') {
+        return {
+            filter: 'agDateColumnFilter',
+            filterParams: {
+                filterOptions: ['equals', 'notEqual', 'lessThan', 'greaterThan', 'inRange', 'blank', 'notBlank'],
+                defaultOption: 'equals',
+                buttons: ['clear', 'reset', 'apply'],
+                closeOnApply: true,
+                filterPlaceholder: 'Выберите дату…',
+                comparator: (filterDate, cellValue) => {
+                    if (!cellValue) return -1;
+                    const s = String(cellValue).trim().replace(/\./g, '-').replace(/\//g, '-');
+                    // Поддерживаем DD-MM-YYYY и YYYY-MM-DD
+                    let d;
+                    const m1 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
+                    if (m1) {
+                        const yyyy = m1[3].length === 2 ? '20' + m1[3] : m1[3];
+                        d = new Date(`${yyyy}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`);
+                    } else {
+                        d = new Date(s);
+                    }
+                    if (isNaN(d)) return -1;
+                    if (d < filterDate) return -1;
+                    if (d > filterDate) return 1;
+                    return 0;
+                },
+            }
+        };
+    }
+    return {
+        filter: 'agTextColumnFilter',
+        filterParams: {
+            filterOptions: ['contains', 'notContains', 'equals', 'notEqual',
+                            'startsWith', 'endsWith', 'blank', 'notBlank'],
+            defaultOption: 'contains',
+            buttons: ['clear', 'reset', 'apply'],
+            closeOnApply: true,
+            debounceMs: 200,
+            caseSensitive: false,
+            trimInput: true,
+            filterPlaceholder: 'Введите текст…',
+        }
+    };
+};
+
 const defaultColDef = {
-    flex: 1, minWidth: 100, filter: true, sortable: false, resizable: true,
+    flex: 1, minWidth: 100, filter: 'agTextColumnFilter', sortable: false, resizable: true,
+    filterParams: {
+        filterOptions: ['contains', 'notContains', 'equals', 'notEqual',
+                        'startsWith', 'endsWith', 'blank', 'notBlank'],
+        defaultOption: 'contains',
+        buttons: ['clear', 'reset', 'apply'],
+        closeOnApply: true,
+        debounceMs: 200,
+        caseSensitive: false,
+        trimInput: true,
+        filterPlaceholder: 'Введите текст…',
+    },
     wrapText: true,
     // autoHeight несовместим с rowSpan (merges) — поэтому ставим только wrapText.
     // Для длинных шапок используются rowHeights из импорта или ручной ресайз.
@@ -614,6 +773,7 @@ const finalColumnDefs = computed(() => {
 
     const mainCols = props.columnDefs.map((col) => ({
         ...col,
+        ...filterConfigFor(col.field),
         headerClass: (params) => {
             const baseClass = typeof col.headerClass === 'string' ? col.headerClass : '';
             if (!selectionStart.value || !selectionEnd.value) return baseClass;
@@ -641,6 +801,7 @@ const finalColumnDefs = computed(() => {
             :rowData="rowData"
             :pinnedTopRowData="pinnedTopRowData"
             :defaultColDef="defaultColDef"
+            :localeText="localeText"
             @grid-ready="onGridReady"
             @cell-value-changed="onCellValueChanged"
             @cell-focused="onCellFocused"
@@ -787,6 +948,123 @@ const finalColumnDefs = computed(() => {
 .excel-row-resize-handle:hover {
     background-color: #107c41;
 }
+
+/* === Filter UX (Excel-style) =================================== */
+
+/* 1) Иконка фильтра в шапке: всегда чуть видна, ярче на hover */
+.ag-theme-balham .ag-header-cell .ag-header-cell-menu-button,
+.ag-theme-balham .ag-header-cell .ag-header-icon {
+    opacity: 0.55;
+    transition: opacity .15s, color .15s;
+}
+.ag-theme-balham .ag-header-cell:hover .ag-header-cell-menu-button,
+.ag-theme-balham .ag-header-cell:hover .ag-header-icon {
+    opacity: 1;
+}
+
+/* 2) Колонка с активным фильтром — зелёная подложка + зелёная воронка */
+.ag-theme-balham .ag-header-cell.ag-header-cell-filtered {
+    background-color: #e8f3ee !important;
+    box-shadow: inset 0 -3px 0 0 #107c41;
+}
+.ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-header-cell-menu-button,
+.ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-icon-filter,
+.ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-header-icon {
+    opacity: 1 !important;
+    color: #107c41 !important;
+}
+
+/* 3) Сам попап фильтра — белый, с тенью, как в Office */
+.ag-theme-balham .ag-popup .ag-menu,
+.ag-theme-balham .ag-filter {
+    border: 1px solid #b8b8b8 !important;
+    border-radius: 4px !important;
+    box-shadow: 0 6px 22px rgba(0,0,0,.18) !important;
+    background: #fff !important;
+    min-width: 280px !important;
+}
+
+/* 4) Внутренние поля и селекты — ровные, с зелёным focus */
+.ag-theme-balham .ag-filter-wrapper {
+    padding: 10px 12px 4px 12px !important;
+}
+.ag-theme-balham .ag-filter input[type="text"],
+.ag-theme-balham .ag-filter input[type="number"],
+.ag-theme-balham .ag-filter input[type="date"],
+.ag-theme-balham .ag-filter .ag-picker-field-wrapper,
+.ag-theme-balham .ag-filter select {
+    border: 1px solid #c8c6c4 !important;
+    border-radius: 2px !important;
+    padding: 4px 8px !important;
+    height: 28px !important;
+    font-size: 12px !important;
+    background: #fff !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
+}
+.ag-theme-balham .ag-filter input:focus,
+.ag-theme-balham .ag-filter .ag-picker-field-wrapper:focus-within {
+    border-color: #107c41 !important;
+    outline: none !important;
+    box-shadow: 0 0 0 1px #107c41 !important;
+}
+
+/* 5) Подпись «И/Или» между двумя условиями */
+.ag-theme-balham .ag-filter-condition {
+    margin: 6px 0 !important;
+    padding: 4px 0 !important;
+    border-top: 1px dashed #e1e1e1 !important;
+    border-bottom: 1px dashed #e1e1e1 !important;
+    font-size: 11px !important;
+    color: #666 !important;
+    display: flex !important;
+    gap: 14px !important;
+    justify-content: center !important;
+}
+
+/* 6) Нижняя панель кнопок: зелёный «Применить» (primary), серые «Очистить/Сбросить» */
+.ag-theme-balham .ag-filter-apply-panel {
+    border-top: 1px solid #e1e1e1 !important;
+    background: #fafafa !important;
+    padding: 8px 12px !important;
+    display: flex !important;
+    gap: 6px !important;
+    justify-content: flex-end !important;
+}
+.ag-theme-balham .ag-filter-apply-panel button {
+    border: 1px solid #c8c6c4 !important;
+    border-radius: 2px !important;
+    padding: 5px 14px !important;
+    font-size: 12px !important;
+    background: #fff !important;
+    color: #444 !important;
+    cursor: pointer !important;
+    min-width: 78px !important;
+    transition: background .1s, border-color .1s;
+}
+.ag-theme-balham .ag-filter-apply-panel button:hover {
+    background: #f0f0f0 !important;
+    border-color: #a0a0a0 !important;
+}
+/* «Применить» — последняя кнопка справа, делаем primary-зелёной */
+.ag-theme-balham .ag-filter-apply-panel button:last-child {
+    background: #107c41 !important;
+    color: #fff !important;
+    border-color: #107c41 !important;
+    font-weight: 600 !important;
+}
+.ag-theme-balham .ag-filter-apply-panel button:last-child:hover {
+    background: #0e6938 !important;
+    border-color: #0e6938 !important;
+}
+
+/* 7) Подсказка под полем ввода фильтра — лёгкий placeholder */
+.ag-theme-balham .ag-filter input::placeholder {
+    color: #a0a0a0 !important;
+    font-style: italic;
+}
+
+/* === конец Filter UX =========================================== */
 
 /* Resize tooltip during drag */
 .excel-resize-tooltip {

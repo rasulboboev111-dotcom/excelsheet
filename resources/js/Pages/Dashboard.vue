@@ -71,6 +71,42 @@ const pendingFormatPainter = ref(null);
 const activeSheetId = computed(() => props.activeSheet?.id);
 const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId);
 
+// --- Zoom (как в Excel: ползунок справа снизу, Ctrl+колесо, диалог по клику на проценты) ---
+const ZOOM_MIN = 25;
+const ZOOM_MAX = 200;
+const zoom = ref(100);
+const showZoomDialog = ref(false);
+const zoomDialogValue = ref(100);
+const setZoom = (v) => {
+    const n = Math.round(Number(v));
+    if (Number.isNaN(n)) return;
+    zoom.value = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, n));
+};
+const zoomIn = () => setZoom(zoom.value + 10);
+const zoomOut = () => setZoom(zoom.value - 10);
+const onZoomSliderDown = (e) => {
+    const slider = e.currentTarget;
+    const update = (clientX) => {
+        const rect = slider.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        setZoom(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
+    };
+    update(e.clientX);
+    const move = (ev) => update(ev.clientX);
+    const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+};
+const onWheelZoom = (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setZoom(zoom.value + (e.deltaY < 0 ? 10 : -10));
+};
+const openZoomDialog = () => { zoomDialogValue.value = zoom.value; showZoomDialog.value = true; };
+
 const handleColumnResized = ({ field, width }) => {
     sheetMeta.value.colWidths = { ...sheetMeta.value.colWidths, [field]: width };
 };
@@ -1113,7 +1149,17 @@ const saveSheetName = (sheet) => {
 const openTabContextMenu = (event, sheet) => {
     // Контекстное меню вкладки (переименовать/скрыть/удалить) — только для админа.
     if (!props.isAdmin) return;
-    tabContextMenu.value = { show: true, x: event.clientX, y: event.clientY - 100, sheet: sheet };
+    // Excel-style: меню открывается в точке клика, но "вылетает" вверх,
+    // если снизу не хватает места (вкладки обычно у нижнего края).
+    const MENU_W = 180;
+    const MENU_H = 110; // 3 пункта по ~36px + рамки
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = event.clientX;
+    let y = event.clientY;
+    if (x + MENU_W > vw - 4) x = Math.max(4, vw - MENU_W - 4);
+    if (y + MENU_H > vh - 4) y = Math.max(4, y - MENU_H);
+    tabContextMenu.value = { show: true, x, y, sheet };
 };
 const closeContextMenu = () => { tabContextMenu.value.show = false; };
 const deleteSheet = (sheet) => { if (confirm(`Удалить лист "${sheet.name}"?`)) router.delete(route('sheets.destroy', sheet.id)); closeContextMenu(); };
@@ -1277,6 +1323,11 @@ const exportXlsx = async () => {
 };
 
 const handleGlobalKeydown = (e) => {
+    // Esc — закрыть контекстное меню вкладки.
+    if (e.key === 'Escape' && tabContextMenu.value.show) {
+        closeContextMenu();
+        return;
+    }
     // Не перехватываем хоткеи, когда пользователь печатает в поле ввода
     const tgt = e.target;
     const inField = tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable);
@@ -1398,7 +1449,7 @@ onUnmounted(() => {
                        :class="['flex-1 border-none focus:ring-0 py-0.5 text-sm px-2', !canEdit && 'bg-gray-50 text-gray-500']" />
             </div>
 
-            <div class="overflow-hidden relative bg-white" style="height: calc(100vh - 200px);">
+            <div class="overflow-hidden relative bg-white" style="height: calc(100vh - 200px);" @wheel="onWheelZoom">
                 <div v-if="!activeSheet" class="h-full flex items-center justify-center text-gray-500 text-sm flex-col gap-3">
                     <svg class="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
                     <div v-if="isAdmin" class="text-center">Создайте новый лист «+» или импортируйте .xlsx.</div>
@@ -1411,16 +1462,18 @@ onUnmounted(() => {
                         📂 Импортировать .xlsx
                     </button>
                 </div>
-                <ExcelTable v-if="activeSheet" :rowData="tableDataForGrid" :columnDefs="columnDefs"
-                    :pinnedTopRowData="pinnedTopRowData" :freezeRow="!!sheetMeta.freezeRow"
-                    :merges="sheetMeta.merges" :validations="sheetMeta.validations"
-                    :colWidths="sheetMeta.colWidths" :rowHeights="sheetMeta.rowHeights"
-                    :readOnly="!canEdit"
-                    @cell-value-changed="handleCellValueChanged" @cell-focused="handleCellFocused"
-                    @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged"
-                    @range-clear="handleRangeClear" @ready="handleTableReady"
-                    @grow-rows="handleGrowRows" @grow-cols="handleGrowCols"
-                    @column-resized="handleColumnResized" @row-resized="handleRowResized" />
+                <div v-if="activeSheet" class="w-full h-full" :style="{ zoom: zoom / 100 }">
+                    <ExcelTable :rowData="tableDataForGrid" :columnDefs="columnDefs"
+                        :pinnedTopRowData="pinnedTopRowData" :freezeRow="!!sheetMeta.freezeRow"
+                        :merges="sheetMeta.merges" :validations="sheetMeta.validations"
+                        :colWidths="sheetMeta.colWidths" :rowHeights="sheetMeta.rowHeights"
+                        :readOnly="!canEdit"
+                        @cell-value-changed="handleCellValueChanged" @cell-focused="handleCellFocused"
+                        @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged"
+                        @range-clear="handleRangeClear" @ready="handleTableReady"
+                        @grow-rows="handleGrowRows" @grow-cols="handleGrowCols"
+                        @column-resized="handleColumnResized" @row-resized="handleRowResized" />
+                </div>
                 <ExcelContextMenu v-if="cellContextMenu.show" :x="cellContextMenu.x" :y="cellContextMenu.y" :cellData="cellContextMenu.params"
                     @close="cellContextMenu.show = false" @action="handleMenuAction" />
             </div>
@@ -1453,7 +1506,15 @@ onUnmounted(() => {
                             <span v-if="selectionStats.numCount > 0">Сумма: <b>{{ fmt(selectionStats.sum) }}</b></span>
                         </template>
                     </div>
-                    <div class="flex items-center gap-4"><span>70%</span><button>－</button><div class="w-24 h-[1px] bg-gray-400 relative"><div class="absolute left-[70%] top-[-5px] w-[2px] h-[11px] bg-gray-600"></div></div><button>＋</button></div>
+                    <div class="flex items-center gap-2 select-none">
+                        <button @click="zoomOut" :disabled="zoom <= ZOOM_MIN" class="w-5 h-5 flex items-center justify-center hover:bg-gray-300 rounded disabled:opacity-40 text-gray-700" title="Уменьшить">−</button>
+                        <div class="w-32 h-1 bg-gray-300 relative cursor-pointer rounded" @mousedown="onZoomSliderDown" title="Масштаб">
+                            <div class="absolute top-[-4px] w-[10px] h-[10px] bg-white border border-gray-500 rounded-full pointer-events-none shadow"
+                                 :style="{ left: `calc(${(zoom - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN) * 100}% - 5px)` }"></div>
+                        </div>
+                        <button @click="zoomIn" :disabled="zoom >= ZOOM_MAX" class="w-5 h-5 flex items-center justify-center hover:bg-gray-300 rounded disabled:opacity-40 text-gray-700" title="Увеличить">＋</button>
+                        <button @click="openZoomDialog" class="ml-1 min-w-[42px] text-right hover:bg-gray-300 rounded px-1" title="Параметры масштаба">{{ zoom }}%</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1484,6 +1545,30 @@ onUnmounted(() => {
                     <button @click="replaceCurrent()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Заменить</button>
                     <button @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">Заменить все</button>
                     <button @click="showFindReplace = false" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Закрыть</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Диалог "Масштаб" (как в Excel: пресеты + произвольный) -->
+        <div v-if="showZoomDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30" @click.self="showZoomDialog = false">
+            <div class="bg-white rounded-lg shadow-xl w-[300px] p-4">
+                <h3 class="font-bold text-sm mb-3">Масштаб</h3>
+                <div class="grid grid-cols-3 gap-2 mb-3">
+                    <button v-for="p in [200, 100, 75, 50, 25]" :key="p"
+                            @click="setZoom(p); showZoomDialog = false"
+                            class="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100"
+                            :class="{ 'bg-[#217346] text-white border-[#217346]': zoom === p }">{{ p }}%</button>
+                </div>
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="text-sm">Произвольный:</span>
+                    <input type="number" :min="ZOOM_MIN" :max="ZOOM_MAX" v-model.number="zoomDialogValue"
+                           @keyup.enter="setZoom(zoomDialogValue); showZoomDialog = false"
+                           class="border border-gray-300 rounded w-20 px-1 text-sm" />
+                    <span class="text-sm">%</span>
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button @click="showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300">Отмена</button>
+                    <button @click="setZoom(zoomDialogValue); showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">ОК</button>
                 </div>
             </div>
         </div>
