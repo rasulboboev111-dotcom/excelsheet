@@ -30,20 +30,46 @@ export function useSheetMeta(sheetIdRef) {
         } catch (_) { meta.value = empty(); }
     };
 
-    // Сама запись: JSON.stringify + setItem. Откладываем на idle frame, чтобы
-    // огромная мета (тысячи rowHeights/merges) не блокировала main thread.
-    const _idleSchedule = (cb) => {
-        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-            return window.requestIdleCallback(cb, { timeout: 1000 });
+    // Запись на диск: захватываем id и снапшот меты СИНХРОННО на момент scheduleSave,
+    // потом откладываем сам localStorage.setItem на idle. Это защищает от гонки при
+    // быстром переключении листов: если в момент idle-callback'а meta.value уже
+    // содержит данные другого листа — мы всё равно запишем правильный снимок под
+    // правильным ключом.
+    let _idleHandle = null;
+    let _idleHandleType = null; // 'idle' | 'timeout'
+    const _cancelIdle = () => {
+        if (_idleHandle == null) return;
+        if (_idleHandleType === 'idle' && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(_idleHandle);
+        } else if (_idleHandleType === 'timeout') {
+            clearTimeout(_idleHandle);
         }
-        return setTimeout(cb, 0);
+        _idleHandle = null;
+        _idleHandleType = null;
+    };
+    const _idleSchedule = (cb) => {
+        _cancelIdle();
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            _idleHandleType = 'idle';
+            _idleHandle = window.requestIdleCallback(cb, { timeout: 1000 });
+        } else {
+            _idleHandleType = 'timeout';
+            _idleHandle = setTimeout(cb, 0);
+        }
     };
 
     const save = () => {
         const id = sheetIdRef.value;
         if (!id) return;
+        // СНАПШОТ — JSON.stringify тут, не в idle. Сериализация даёт стабильную
+        // строку, идущую под зафиксированным ключом id, независимо от того, что
+        // случится с meta.value до момента записи.
+        let snapshot;
+        try { snapshot = JSON.stringify(meta.value); } catch (_) { return; }
         _idleSchedule(() => {
-            try { localStorage.setItem(KEY(id), JSON.stringify(meta.value)); } catch (_) {}
+            _idleHandle = null;
+            _idleHandleType = null;
+            try { localStorage.setItem(KEY(id), snapshot); } catch (_) {}
         });
     };
 
@@ -60,7 +86,18 @@ export function useSheetMeta(sheetIdRef) {
     let _loading = false;
     const safeLoad = (id) => { _loading = true; load(id); _loading = false; };
 
-    watch(sheetIdRef, (id) => safeLoad(id), { immediate: true });
+    // Перед сменой листа — досылаем pending save СИНХРОННО, потом грузим новый.
+    // Иначе debounce-таймер выстрелит уже после того, как meta.value заменится
+    // на содержимое нового листа, и мы запишем чужие данные под старым ключом.
+    watch(sheetIdRef, (newId, oldId) => {
+        if (oldId !== undefined && oldId !== null) {
+            if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+            _cancelIdle();
+            // Прямая синхронная запись для предыдущего листа.
+            try { localStorage.setItem(KEY(oldId), JSON.stringify(meta.value)); } catch (_) {}
+        }
+        safeLoad(newId);
+    }, { immediate: true });
     watch(meta, () => { if (!_loading) scheduleSave(); }, { deep: true });
 
     const allMetaForExport = () => {

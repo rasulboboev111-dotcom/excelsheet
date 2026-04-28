@@ -302,6 +302,34 @@ const styleToExceljs = (style, cell) => {
     else if (style.numberFormat === 'comma') cell.numFmt = '#,##0';
 };
 
+// Excel-ограничения для имени листа: длина ≤ 31, нельзя символы : \ / ? * [ ],
+// нельзя начинать/заканчивать апострофом, нельзя дубликаты в одной книге (case-insensitive).
+const sanitizeSheetName = (raw) => {
+    let name = String(raw || 'Sheet').replace(/[:\\/?*\[\]]/g, '_').trim();
+    name = name.replace(/^'+|'+$/g, ''); // убираем ведущие/конечные апострофы
+    if (!name) name = 'Sheet';
+    if (name.length > 31) name = name.slice(0, 31);
+    return name;
+};
+const dedupSheetName = (desired, used) => {
+    const base = sanitizeSheetName(desired);
+    let candidate = base;
+    let n = 2;
+    // ExcelJS сравнивает имена case-insensitive; делаем то же самое.
+    while (used.has(candidate.toLowerCase())) {
+        // Сохраняем общую длину ≤ 31, ужимая base под суффикс ` (n)`.
+        const suffix = ' (' + n + ')';
+        const trimmed = base.length + suffix.length > 31
+            ? base.slice(0, 31 - suffix.length)
+            : base;
+        candidate = trimmed + suffix;
+        n++;
+        if (n > 9999) break; // защита от бесконечного цикла
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
+};
+
 // Build & download .xlsx from sheets array { name, columnDefs, rowData, merges, validations, colWidths, rowHeights, hidden }
 export async function writeXlsxFile(filename, sheets) {
     const ExcelJS = await ensureExcelJS();
@@ -309,8 +337,10 @@ export async function writeXlsxFile(filename, sheets) {
     wb.creator = 'Excel Online';
     wb.created = new Date();
 
+    const usedNames = new Set();
     sheets.forEach(sheet => {
-        const ws = wb.addWorksheet(sheet.name || 'Sheet', {
+        const safeName = dedupSheetName(sheet.name, usedNames);
+        const ws = wb.addWorksheet(safeName, {
             state: sheet.hidden ? 'hidden' : 'visible'
         });
 

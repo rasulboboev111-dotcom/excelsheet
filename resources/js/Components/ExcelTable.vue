@@ -306,11 +306,17 @@ const onCellValueChanged = (event) => {
         const sheetId = hf.getSheetId('Sheet1');
         if (typeof sheetId === 'number') {
             const colIndex = props.columnDefs.findIndex(c => c.field === event.column?.getColId());
-            const bodyIdx = event.node?.rowIndex ?? -1;
             const rowPinned = event.node?.rowPinned;
-            const absRow = rowPinned === 'top'
-                ? 0
-                : (props.freezeRow ? bodyIdx + 1 : bodyIdx);
+            // ВНИМАНИЕ: event.node.rowIndex после фильтра/сортировки = «отображаемый» индекс,
+            // а не индекс в данных. Берём абсолютный индекс по ССЫЛКЕ event.data в массиве —
+            // это надёжно при любом порядке/фильтрации.
+            let absRow = -1;
+            if (rowPinned === 'top') {
+                absRow = 0;
+            } else {
+                const dataIdx = (props.rowData || []).indexOf(event.data);
+                if (dataIdx >= 0) absRow = props.freezeRow ? dataIdx + 1 : dataIdx;
+            }
             if (colIndex >= 0 && absRow >= 0) {
                 hf.setCellContents({ sheet: sheetId, col: colIndex, row: absRow }, [[event.newValue ?? '']]);
             }
@@ -456,20 +462,27 @@ const onGridKeyDown = (e) => {
     handleKeyDown(e);
 };
 
+// Проверяет, был ли keydown инициирован из любого редактируемого поля —
+// инпута/textarea/select, contenteditable, ИЛИ AG Grid-попапа (фильтр, меню колонки),
+// в том числе если оно где-то внутри Shadow DOM. composedPath() даёт всех предков
+// сквозь Shadow-границы; closest() — только обычный DOM.
+const isEventInField = (e) => {
+    const path = (typeof e.composedPath === 'function') ? e.composedPath() : [e.target];
+    for (const el of path) {
+        if (!el || el === window || el === document) continue;
+        const tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (el.isContentEditable) return true;
+        const cl = el.classList;
+        if (cl && (cl.contains('ag-filter') || cl.contains('ag-menu') || cl.contains('ag-popup'))) return true;
+    }
+    return false;
+};
+
 const handleKeyDown = (e) => {
-    // Если клавиша нажата внутри редактируемого поля — это попап фильтра,
-    // строка формул, custom-editor (DropdownEditor) и т.п. — НЕ перехватываем
-    // Delete/Backspace глобально, иначе сотрём содержимое ранее выделенного диапазона
-    // вместо удаления символа в поле.
-    const tgt = e.target;
-    const inField = tgt && (
-        tgt.tagName === 'INPUT' ||
-        tgt.tagName === 'TEXTAREA' ||
-        tgt.tagName === 'SELECT' ||
-        tgt.isContentEditable ||
-        (tgt.closest && tgt.closest('.ag-filter, .ag-menu, .ag-popup'))
-    );
-    if (inField) return;
+    // Если клавиша нажата внутри редактируемого поля — НЕ перехватываем Delete/Backspace
+    // и Shift+Arrows глобально, иначе сотрём содержимое ранее выделенного диапазона.
+    if (isEventInField(e)) return;
 
     // 1. Очистка диапазона по клавише Delete или Backspace
     if (e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace') {
@@ -586,6 +599,16 @@ const excelSerialToDate = (serial) => {
     const ms = utcDays * 86400 * 1000;
     return new Date(ms);
 };
+
+// Кэш «top-left ячейка → merge»: для colSpan/rowSpan callbacks (вызываются на каждый
+// видимый рендер). Линейный поиск был квадратичным по числу видимых ячеек.
+const mergeTopLeftCache = computed(() => {
+    const cache = new Map();
+    (props.merges || []).forEach(m => {
+        cache.set(m.row + '-' + m.col, m);
+    });
+    return cache;
+});
 
 // Кэш «строка-колонка → merge»: при большом числе merge'ей линейный поиск
 // делает cellStyle квадратичным по числу видимых ячеек. Map работает за O(1).
@@ -823,13 +846,13 @@ const defaultColDef = {
     colSpan: (params) => {
         const colIdx = colIndexMap.value[params.colDef.field];
         if (colIdx === undefined) return 1;
-        const m = (props.merges || []).find(m => m.row === params.node.rowIndex && m.col === colIdx);
+        const m = mergeTopLeftCache.value.get(params.node.rowIndex + '-' + colIdx);
         return m ? m.colSpan : 1;
     },
     rowSpan: (params) => {
         const colIdx = colIndexMap.value[params.colDef.field];
         if (colIdx === undefined) return 1;
-        const m = (props.merges || []).find(m => m.row === params.node.rowIndex && m.col === colIdx);
+        const m = mergeTopLeftCache.value.get(params.node.rowIndex + '-' + colIdx);
         return m ? m.rowSpan : 1;
     },
     cellEditorSelector: (params) => {

@@ -6,19 +6,19 @@
       "_ag-grid-8272d0dc.js"
     ]
   },
-  "_AuthenticatedLayout-079939b9.js": {
-    "file": "assets/AuthenticatedLayout-079939b9.js",
+  "_AuthenticatedLayout-617761ce.js": {
+    "file": "assets/AuthenticatedLayout-617761ce.js",
     "imports": [
       "_ApplicationLogo-93659d95.js",
       "_ag-grid-8272d0dc.js",
-      "_inertia-584a1885.js"
+      "_inertia-5e73c4cc.js"
     ]
   },
-  "_GuestLayout-35abf42a.js": {
-    "file": "assets/GuestLayout-35abf42a.js",
+  "_GuestLayout-ff54cf8d.js": {
+    "file": "assets/GuestLayout-ff54cf8d.js",
     "imports": [
       "_ApplicationLogo-93659d95.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ag-grid-8272d0dc.js"
     ]
   },
@@ -53,8 +53,8 @@
       "_exceljs-4454f5ce.js"
     ]
   },
-  "_inertia-584a1885.js": {
-    "file": "assets/inertia-584a1885.js",
+  "_inertia-5e73c4cc.js": {
+    "file": "assets/inertia-5e73c4cc.js",
     "imports": [
       "_exceljs-4454f5ce.js",
       "_ag-grid-8272d0dc.js",
@@ -72,12 +72,12 @@
     "src": "ag-grid.css"
   },
   "resources/js/Pages/Auth/ConfirmPassword.vue": {
-    "file": "assets/ConfirmPassword-84210e72.js",
+    "file": "assets/ConfirmPassword-15bdd714.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
+      "_GuestLayout-ff54cf8d.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -87,12 +87,12 @@
     "src": "resources/js/Pages/Auth/ConfirmPassword.vue"
   },
   "resources/js/Pages/Auth/ForgotPassword.vue": {
-    "file": "assets/ForgotPassword-f45cb73f.js",
+    "file": "assets/ForgotPassword-8c80fed7.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
+      "_GuestLayout-ff54cf8d.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -102,12 +102,12 @@
     "src": "resources/js/Pages/Auth/ForgotPassword.vue"
   },
   "resources/js/Pages/Auth/Login.vue": {
-    "file": "assets/Login-872d7219.js",
+    "file": "assets/Login-f69420db.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
+      "_GuestLayout-ff54cf8d.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -117,12 +117,12 @@
     "src": "resources/js/Pages/Auth/Login.vue"
   },
   "resources/js/Pages/Auth/Register.vue": {
-    "file": "assets/Register-e64f5330.js",
+    "file": "assets/Register-90944b5a.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
+      "_GuestLayout-ff54cf8d.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -132,12 +132,12 @@
     "src": "resources/js/Pages/Auth/Register.vue"
   },
   "resources/js/Pages/Auth/ResetPassword.vue": {
-    "file": "assets/ResetPassword-15660189.js",
+    "file": "assets/ResetPassword-3ebc631c.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
+      "_GuestLayout-ff54cf8d.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -147,11 +147,11 @@
     "src": "resources/js/Pages/Auth/ResetPassword.vue"
   },
   "resources/js/Pages/Auth/VerifyEmail.vue": {
-    "file": "assets/VerifyEmail-d656b140.js",
+    "file": "assets/VerifyEmail-9d2c3aa3.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_GuestLayout-35abf42a.js",
-      "_inertia-584a1885.js",
+      "_GuestLayout-ff54cf8d.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -172,10 +172,10 @@
       "_exceljs-4454f5ce.js",
       "_exceljs-4454f5ce.js"
     ],
-    "file": "assets/Dashboard-c972c147.js",
+    "file": "assets/Dashboard-e2ffb1bd.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_hyperformula-94a9d98f.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "resources/js/app.js",
@@ -186,13 +186,13 @@
     "src": "resources/js/Pages/Dashboard.vue"
   },
   "resources/js/Pages/Profile/Edit.vue": {
-    "file": "assets/Edit-39d00ec4.js",
+    "file": "assets/Edit-4c19cba5.js",
     "imports": [
-      "_AuthenticatedLayout-079939b9.js",
+      "_AuthenticatedLayout-617761ce.js",
       "resources/js/Pages/Profile/Partials/DeleteUserForm.vue",
       "resources/js/Pages/Profile/Partials/UpdatePasswordForm.vue",
       "resources/js/Pages/Profile/Partials/UpdateProfileInformationForm.vue",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ag-grid-8272d0dc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
@@ -205,11 +205,11 @@
     "src": "resources/js/Pages/Profile/Edit.vue"
   },
   "resources/js/Pages/Profile/Partials/DeleteUserForm.vue": {
-    "file": "assets/DeleteUserForm-da00254f.js",
+    "file": "assets/DeleteUserForm-4eb31aa6.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
       "_TextInput-f5cd1f9a.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_exceljs-4454f5ce.js",
       "_lodash-b5e5e8b8.js"
     ],
@@ -217,12 +217,12 @@
     "src": "resources/js/Pages/Profile/Partials/DeleteUserForm.vue"
   },
   "resources/js/Pages/Profile/Partials/UpdatePasswordForm.vue": {
-    "file": "assets/UpdatePasswordForm-86857ae3.js",
+    "file": "assets/UpdatePasswordForm-7056bfc1.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
       "_TextInput-f5cd1f9a.js",
       "_PrimaryButton-12adb9b4.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_exceljs-4454f5ce.js",
       "_lodash-b5e5e8b8.js"
     ],
@@ -230,12 +230,12 @@
     "src": "resources/js/Pages/Profile/Partials/UpdatePasswordForm.vue"
   },
   "resources/js/Pages/Profile/Partials/UpdateProfileInformationForm.vue": {
-    "file": "assets/UpdateProfileInformationForm-193c9cf5.js",
+    "file": "assets/UpdateProfileInformationForm-1ac990a4.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
       "_TextInput-f5cd1f9a.js",
       "_PrimaryButton-12adb9b4.js",
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_exceljs-4454f5ce.js",
       "_lodash-b5e5e8b8.js"
     ],
@@ -243,11 +243,11 @@
     "src": "resources/js/Pages/Profile/Partials/UpdateProfileInformationForm.vue"
   },
   "resources/js/Pages/Users/Index.vue": {
-    "file": "assets/Index-290a7edb.js",
+    "file": "assets/Index-9ef22d81.js",
     "imports": [
       "_ag-grid-8272d0dc.js",
-      "_AuthenticatedLayout-079939b9.js",
-      "_inertia-584a1885.js",
+      "_AuthenticatedLayout-617761ce.js",
+      "_inertia-5e73c4cc.js",
       "_ApplicationLogo-93659d95.js",
       "__plugin-vue_export-helper-c27b6911.js",
       "_exceljs-4454f5ce.js",
@@ -257,9 +257,9 @@
     "src": "resources/js/Pages/Users/Index.vue"
   },
   "resources/js/Pages/Welcome.vue": {
-    "file": "assets/Welcome-1dd77339.js",
+    "file": "assets/Welcome-597b382a.js",
     "imports": [
-      "_inertia-584a1885.js",
+      "_inertia-5e73c4cc.js",
       "_ag-grid-8272d0dc.js",
       "_exceljs-4454f5ce.js",
       "_lodash-b5e5e8b8.js"
@@ -290,12 +290,12 @@
       "resources/js/Pages/Users/Index.vue",
       "resources/js/Pages/Welcome.vue"
     ],
-    "file": "assets/app-ff6aa821.js",
+    "file": "assets/app-d40d012b.js",
     "imports": [
       "_lodash-b5e5e8b8.js",
       "_exceljs-4454f5ce.js",
       "_ag-grid-8272d0dc.js",
-      "_inertia-584a1885.js"
+      "_inertia-5e73c4cc.js"
     ],
     "isEntry": true,
     "src": "resources/js/app.js"

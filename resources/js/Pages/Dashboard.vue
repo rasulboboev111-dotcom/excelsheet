@@ -532,11 +532,10 @@ const _pendingSyncRows = new Set();
 let _pendingSyncTimer = null;
 const SYNC_DEBOUNCE_MS = 400;
 
-const _flushPendingSync = () => {
-    if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
-    if (_pendingSyncRows.size === 0) return;
-    if (!props.activeSheet?.id) { _pendingSyncRows.clear(); return; }
-
+// Сборка тела запроса из буфера. Возвращает {url, payload} или null если нечего слать.
+const _buildSyncPayload = () => {
+    if (_pendingSyncRows.size === 0) return null;
+    if (!props.activeSheet?.id) { _pendingSyncRows.clear(); return null; }
     const rowsToSync = Array.from(_pendingSyncRows);
     _pendingSyncRows.clear();
     const updatedRows = [];
@@ -545,10 +544,64 @@ const _flushPendingSync = () => {
         if (idx === -1) idx = tableData.value.findIndex(r => r.id === row.id);
         if (idx !== -1) updatedRows.push({ row_index: idx, data: row });
     });
-    if (updatedRows.length === 0) return;
+    if (updatedRows.length === 0) return null;
+    return {
+        url: route('sheets.updateData', props.activeSheet.id),
+        rows: updatedRows,
+    };
+};
 
-    router.post(route('sheets.updateData', props.activeSheet.id), { rows: updatedRows },
-        { preserveScroll: true, preserveState: true });
+// Обычный flush через Inertia: с preserveState, обновляет props в случае ответа.
+const _flushPendingSync = () => {
+    if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+    const p = _buildSyncPayload();
+    if (!p) return;
+    router.post(p.url, { rows: p.rows }, { preserveScroll: true, preserveState: true });
+};
+
+// «Гарантированная» доставка для unload / Inertia 'before'-навигации:
+// `fetch` с `keepalive: true` переживает закрытие вкладки и переход. Inertia-router
+// этот запрос не отменяет (мы не используем router.post). Минус: ответ не обрабатывается
+// — для последнего рывка перед уходом не критично.
+const _csrfToken = () => {
+    try {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta) return meta.getAttribute('content') || '';
+    } catch (_) {}
+    // Fallback на XSRF cookie (Laravel ставит её всегда).
+    try {
+        const m = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+        if (m) return decodeURIComponent(m[1]);
+    } catch (_) {}
+    return '';
+};
+const _flushPendingSyncBeacon = () => {
+    if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+    const p = _buildSyncPayload();
+    if (!p) return;
+    const body = JSON.stringify({ rows: p.rows });
+    try {
+        // keepalive: запрос переживёт закрытие вкладки или Inertia-навигацию.
+        fetch(p.url, {
+            method: 'POST',
+            keepalive: true,
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': _csrfToken(),
+                'X-XSRF-TOKEN': _csrfToken(),
+            },
+            body,
+        });
+    } catch (_) {
+        // Если fetch недоступен (очень старый браузер) — последний шанс sendBeacon.
+        try {
+            const blob = new Blob([body], { type: 'application/json' });
+            navigator.sendBeacon?.(p.url + '?_token=' + encodeURIComponent(_csrfToken()), blob);
+        } catch (_) {}
+    }
 };
 
 const syncChangesToServer = (rows) => {
@@ -1483,37 +1536,46 @@ const exportXlsx = async () => {
     };
 
     // rowData неактивных листов не лежит в памяти браузера → дотягиваем GET-запросами.
-    let sheetsForExport;
-    try {
-        sheetsForExport = await Promise.all(allSheets.map(async (s) => {
-            let rowData;
-            let cols;
-            if (s.id === activeId) {
-                rowData = tableData.value;
-                cols = columnDefs.value;
-            } else {
-                const resp = await axios.get(route('sheets.fetchData', s.id));
-                rowData = resp.data?.rows || [];
-                cols = (resp.data?.columns && resp.data.columns.length)
-                    ? resp.data.columns
-                    : (s.columns && s.columns.length ? s.columns : []);
-            }
-            const m = metaFor(s.id);
-            return {
-                name: s.name,
-                hidden: !!m.hidden,
-                columnDefs: cols,
-                rowData,
-                merges: m.merges || [],
-                validations: m.validations || {},
-                colWidths: m.colWidths || {},
-                rowHeights: m.rowHeights || {},
-            };
-        }));
-    } catch (err) {
-        console.error(err);
-        alert('Не удалось загрузить данные одного из листов: ' + (err?.message || err));
+    // Используем Promise.allSettled, чтобы один упавший лист не валил весь экспорт.
+    const results = await Promise.allSettled(allSheets.map(async (s) => {
+        let rowData;
+        let cols;
+        if (s.id === activeId) {
+            rowData = tableData.value;
+            cols = columnDefs.value;
+        } else {
+            const resp = await axios.get(route('sheets.fetchData', s.id));
+            rowData = resp.data?.rows || [];
+            cols = (resp.data?.columns && resp.data.columns.length)
+                ? resp.data.columns
+                : (s.columns && s.columns.length ? s.columns : []);
+        }
+        const m = metaFor(s.id);
+        return {
+            name: s.name,
+            hidden: !!m.hidden,
+            columnDefs: cols,
+            rowData,
+            merges: m.merges || [],
+            validations: m.validations || {},
+            colWidths: m.colWidths || {},
+            rowHeights: m.rowHeights || {},
+        };
+    }));
+
+    const sheetsForExport = [];
+    const failed = [];
+    results.forEach((r, idx) => {
+        if (r.status === 'fulfilled') sheetsForExport.push(r.value);
+        else failed.push(allSheets[idx]?.name || `#${idx}`);
+    });
+
+    if (sheetsForExport.length === 0) {
+        alert('Не удалось загрузить ни одного листа: ' + failed.join(', '));
         return;
+    }
+    if (failed.length > 0) {
+        if (!confirm(`Не удалось загрузить листы: ${failed.join(', ')}.\nСкачать файл без них?`)) return;
     }
 
     const filename = (props.activeSheet.name || 'export').replace(/[/\\?%*:|"<>]/g, '_') + '.xlsx';
@@ -1533,20 +1595,18 @@ const handleGlobalKeydown = (e) => {
     }
     if (!e.ctrlKey) return;
 
-    // Расширенный детектор «фокус сейчас в редактируемом поле»: обычные input/textarea,
-    // contenteditable, плюс попапы AG Grid (фильтр, меню колонки) и любой элемент
-    // внутри них. Если фокус там — НИ ОДИН наш Ctrl-хоткей не срабатывает: пусть
-    // работает нативный браузерный (Ctrl+Z откатит символ в инпуте, Ctrl+C скопирует
-    // выделенный текст и т.п.). Это убирает «загадочные исчезновения» данных таблицы
-    // при нажатии Ctrl+Z в поле фильтра.
-    const tgt = e.target;
-    const inField = tgt && (
-        tgt.tagName === 'INPUT' ||
-        tgt.tagName === 'TEXTAREA' ||
-        tgt.tagName === 'SELECT' ||
-        tgt.isContentEditable ||
-        (tgt.closest && tgt.closest('.ag-filter, .ag-menu, .ag-popup'))
-    );
+    // Любой Ctrl-хоткей внутри редактируемого поля (input, textarea, AG Grid-попап,
+    // contenteditable, в т.ч. через Shadow DOM) — пропускаем нативному браузеру:
+    // Ctrl+Z откатывает текст в инпуте, не данные таблицы.
+    const path = (typeof e.composedPath === 'function') ? e.composedPath() : [e.target];
+    let inField = false;
+    for (const el of path) {
+        if (!el || el === window || el === document) continue;
+        const tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) { inField = true; break; }
+        const cl = el.classList;
+        if (cl && (cl.contains('ag-filter') || cl.contains('ag-menu') || cl.contains('ag-popup'))) { inField = true; break; }
+    }
     if (inField) return;
 
     const k = e.key.toLowerCase();
@@ -1580,16 +1640,19 @@ let _removeInertiaBefore = null;
 onMounted(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('click', handleGlobalClick);
-    // Если пользователь закрывает вкладку с не дошедшими до сервера правками — досылаем.
-    window.addEventListener('beforeunload', _flushPendingSync);
-    _removeInertiaBefore = router.on('before', () => { _flushPendingSync(); });
+    // Закрытие вкладки / навигация — досылаем буфер через keepalive-fetch,
+    // который не отменяется Inertia/браузером при unload.
+    window.addEventListener('beforeunload', _flushPendingSyncBeacon);
+    _removeInertiaBefore = router.on('before', () => { _flushPendingSyncBeacon(); });
 });
 
 onUnmounted(() => {
-    _flushPendingSync(); // финальный сброс при размонтировании компонента
+    // При размонтировании самого Dashboard отправляем синхронно через keepalive —
+    // обычный router.post Inertia может отменить.
+    _flushPendingSyncBeacon();
     window.removeEventListener('keydown', handleGlobalKeydown);
     window.removeEventListener('click', handleGlobalClick);
-    window.removeEventListener('beforeunload', _flushPendingSync);
+    window.removeEventListener('beforeunload', _flushPendingSyncBeacon);
     if (_removeInertiaBefore) _removeInertiaBefore();
 });
 </script>
