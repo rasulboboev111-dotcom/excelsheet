@@ -30,10 +30,21 @@ export function useSheetMeta(sheetIdRef) {
         } catch (_) { meta.value = empty(); }
     };
 
+    // Сама запись: JSON.stringify + setItem. Откладываем на idle frame, чтобы
+    // огромная мета (тысячи rowHeights/merges) не блокировала main thread.
+    const _idleSchedule = (cb) => {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            return window.requestIdleCallback(cb, { timeout: 1000 });
+        }
+        return setTimeout(cb, 0);
+    };
+
     const save = () => {
         const id = sheetIdRef.value;
         if (!id) return;
-        try { localStorage.setItem(KEY(id), JSON.stringify(meta.value)); } catch (_) {}
+        _idleSchedule(() => {
+            try { localStorage.setItem(KEY(id), JSON.stringify(meta.value)); } catch (_) {}
+        });
     };
 
     // Дебаунс: ввод значения в ячейку → ребилд rowHeights/colWidths… не должен на каждое

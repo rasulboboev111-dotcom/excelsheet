@@ -1,5 +1,21 @@
-import ExcelJS from 'exceljs';
-import { saveAs } from 'file-saver';
+// ExcelJS и file-saver вытаскиваются динамически — нужны только при чтении/записи .xlsx.
+// При обычной навигации сайта эти ~500 КБ не грузятся.
+let _ExcelJS = null;
+let _saveAs = null;
+const ensureExcelJS = async () => {
+    if (!_ExcelJS) {
+        const mod = await import('exceljs');
+        _ExcelJS = mod.default || mod;
+    }
+    return _ExcelJS;
+};
+const ensureSaveAs = async () => {
+    if (!_saveAs) {
+        const mod = await import('file-saver');
+        _saveAs = mod.saveAs || mod.default?.saveAs || mod.default;
+    }
+    return _saveAs;
+};
 
 // Excel column index (1-based) → letter (A, B, ..., Z, AA, AB, ...)
 export const colNumberToLetter = (n) => {
@@ -98,6 +114,7 @@ const dateToExcelSerial = (date) => {
 // Read .xlsx File → workbook structure { sheets: [{ name, hidden, columnDefs, rowData, merges, validations, colWidths, rowHeights }] }
 export async function readXlsxFile(file) {
     const arrayBuffer = await file.arrayBuffer();
+    const ExcelJS = await ensureExcelJS();
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(arrayBuffer);
 
@@ -287,6 +304,7 @@ const styleToExceljs = (style, cell) => {
 
 // Build & download .xlsx from sheets array { name, columnDefs, rowData, merges, validations, colWidths, rowHeights, hidden }
 export async function writeXlsxFile(filename, sheets) {
+    const ExcelJS = await ensureExcelJS();
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Excel Online';
     wb.created = new Date();
@@ -370,5 +388,6 @@ export async function writeXlsxFile(filename, sheets) {
 
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const saveAs = await ensureSaveAs();
     saveAs(blob, filename || 'export.xlsx');
 }

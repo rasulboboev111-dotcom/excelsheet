@@ -300,7 +300,23 @@ const onCellContextMenu = (params) => {
 };
 
 const onCellValueChanged = (event) => {
-    updateHFData();
+    // Инкрементально обновляем ОДНУ ячейку в HyperFormula вместо полного ребилда листа.
+    // Для большого листа (10К строк × 50 колонок) это в разы быстрее.
+    try {
+        const sheetId = hf.getSheetId('Sheet1');
+        if (typeof sheetId === 'number') {
+            const colIndex = props.columnDefs.findIndex(c => c.field === event.column?.getColId());
+            const bodyIdx = event.node?.rowIndex ?? -1;
+            const rowPinned = event.node?.rowPinned;
+            const absRow = rowPinned === 'top'
+                ? 0
+                : (props.freezeRow ? bodyIdx + 1 : bodyIdx);
+            if (colIndex >= 0 && absRow >= 0) {
+                hf.setCellContents({ sheet: sheetId, col: colIndex, row: absRow }, [[event.newValue ?? '']]);
+            }
+        }
+    } catch (_) { /* падать не должны — пусть deep-watcher подхватит */ }
+
     setTimeout(() => gridApi.value?.refreshCells(), 0);
     const absR = toAbsRow(event.node?.rowIndex, event.node?.rowPinned);
     emit('cell-value-changed', {
@@ -441,6 +457,20 @@ const onGridKeyDown = (e) => {
 };
 
 const handleKeyDown = (e) => {
+    // Если клавиша нажата внутри редактируемого поля — это попап фильтра,
+    // строка формул, custom-editor (DropdownEditor) и т.п. — НЕ перехватываем
+    // Delete/Backspace глобально, иначе сотрём содержимое ранее выделенного диапазона
+    // вместо удаления символа в поле.
+    const tgt = e.target;
+    const inField = tgt && (
+        tgt.tagName === 'INPUT' ||
+        tgt.tagName === 'TEXTAREA' ||
+        tgt.tagName === 'SELECT' ||
+        tgt.isContentEditable ||
+        (tgt.closest && tgt.closest('.ag-filter, .ag-menu, .ag-popup'))
+    );
+    if (inField) return;
+
     // 1. Очистка диапазона по клавише Delete или Backspace
     if (e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace') {
         if (!selectionStart.value || !selectionEnd.value) return;
@@ -557,16 +587,28 @@ const excelSerialToDate = (serial) => {
     return new Date(ms);
 };
 
-// Find merge that COVERS this cell (but is not the top-left). Such cells should not render.
-const findCoveringMerge = (rowIndex, colIndex) => {
-    for (const m of (props.merges || [])) {
-        if (rowIndex >= m.row && rowIndex < m.row + m.rowSpan
-            && colIndex >= m.col && colIndex < m.col + m.colSpan) {
-            if (rowIndex === m.row && colIndex === m.col) return null; // top-left renders normally
-            return m;
+// Кэш «строка-колонка → merge»: при большом числе merge'ей линейный поиск
+// делает cellStyle квадратичным по числу видимых ячеек. Map работает за O(1).
+const mergeCoverCache = computed(() => {
+    const cache = new Map(); // key = `${row}-${col}` → merge object covering this cell (or 'self' if top-left)
+    const merges = props.merges || [];
+    for (const m of merges) {
+        for (let r = m.row; r < m.row + m.rowSpan; r++) {
+            for (let c = m.col; c < m.col + m.colSpan; c++) {
+                const key = r + '-' + c;
+                if (r === m.row && c === m.col) cache.set(key, null); // top-left — рисуется как обычно
+                else cache.set(key, m);
+            }
         }
     }
-    return null;
+    return cache;
+});
+
+// Find merge that COVERS this cell (but is not the top-left). Such cells should not render.
+const findCoveringMerge = (rowIndex, colIndex) => {
+    const key = rowIndex + '-' + colIndex;
+    if (!mergeCoverCache.value.has(key)) return null;
+    return mergeCoverCache.value.get(key); // null означает «top-left, рисуем»
 };
 
 // --- Русская локализация UI AG Grid (фильтры, меню колонок, общие надписи) ---
@@ -666,7 +708,6 @@ const filterConfigFor = (field) => {
                 defaultOption: 'equals',
                 buttons: ['clear', 'reset', 'apply'],
                 closeOnApply: true,
-                debounceMs: 200,
                 filterPlaceholder: 'Введите число…',
                 numberParser: (text) => (text == null || text === '') ? null : parseFloat(String(text).replace(',', '.')),
             }
@@ -709,7 +750,6 @@ const filterConfigFor = (field) => {
             defaultOption: 'contains',
             buttons: ['clear', 'reset', 'apply'],
             closeOnApply: true,
-            debounceMs: 200,
             caseSensitive: false,
             trimInput: true,
             filterPlaceholder: 'Введите текст…',
@@ -725,7 +765,6 @@ const defaultColDef = {
         defaultOption: 'contains',
         buttons: ['clear', 'reset', 'apply'],
         closeOnApply: true,
-        debounceMs: 200,
         caseSensitive: false,
         trimInput: true,
         filterPlaceholder: 'Введите текст…',
@@ -873,6 +912,7 @@ const finalColumnDefs = computed(() => {
             :headerHeight="24"
             :rowHeight="25"
             :getRowHeight="getRowHeight"
+            :suppressRowTransform="true"
         />
     </div>
 </template>

@@ -1526,35 +1526,43 @@ const exportXlsx = async () => {
 };
 
 const handleGlobalKeydown = (e) => {
-    // Esc — закрыть контекстное меню вкладки.
+    // Esc — закрыть контекстное меню вкладки. Работает даже в полях ввода.
     if (e.key === 'Escape' && tabContextMenu.value.show) {
         closeContextMenu();
         return;
     }
-    // Не перехватываем хоткеи, когда пользователь печатает в поле ввода
-    const tgt = e.target;
-    const inField = tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable);
     if (!e.ctrlKey) return;
+
+    // Расширенный детектор «фокус сейчас в редактируемом поле»: обычные input/textarea,
+    // contenteditable, плюс попапы AG Grid (фильтр, меню колонки) и любой элемент
+    // внутри них. Если фокус там — НИ ОДИН наш Ctrl-хоткей не срабатывает: пусть
+    // работает нативный браузерный (Ctrl+Z откатит символ в инпуте, Ctrl+C скопирует
+    // выделенный текст и т.п.). Это убирает «загадочные исчезновения» данных таблицы
+    // при нажатии Ctrl+Z в поле фильтра.
+    const tgt = e.target;
+    const inField = tgt && (
+        tgt.tagName === 'INPUT' ||
+        tgt.tagName === 'TEXTAREA' ||
+        tgt.tagName === 'SELECT' ||
+        tgt.isContentEditable ||
+        (tgt.closest && tgt.closest('.ag-filter, .ag-menu, .ag-popup'))
+    );
+    if (inField) return;
+
     const k = e.key.toLowerCase();
-    // Find — read-only safe.
+    // Read-only safe (просто читают данные).
     if (k === 'h' || k === 'р' || k === 'f' || k === 'а') {
-        if (inField) return;
-        e.preventDefault();
-        openFindReplace();
-        return;
+        e.preventDefault(); openFindReplace(); return;
     }
-    // Copy — read-only safe (просто читает значения в буфер).
-    if ((k === 'c' || k === 'с') && !inField) {
-        e.preventDefault();
-        handleRibbonAction({ type: 'copy' });
-        return;
+    if (k === 'c' || k === 'с') {
+        e.preventDefault(); handleRibbonAction({ type: 'copy' }); return;
     }
+
     // Всё остальное — мутации, требуют canEdit.
     if (!props.canEdit) return;
 
     if (k === 'z' || k === 'я') { e.preventDefault(); undo(); return; }
     if (k === 'y' || k === 'н') { e.preventDefault(); redo(); return; }
-    if (inField) return;
     if (k === 'x' || k === 'ч') { e.preventDefault(); handleRibbonAction({ type: 'cut' }); return; }
     if (k === 'v' || k === 'м') { e.preventDefault(); handleRibbonAction({ type: 'paste' }); return; }
     if (k === 'b' || k === 'и') { e.preventDefault(); handleRibbonAction({ type: 'bold' }); return; }
