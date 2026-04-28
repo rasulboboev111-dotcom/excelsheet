@@ -127,22 +127,30 @@ export async function readXlsxFile(file) {
                 const letter = colNumberToLetter(c);
                 const cell = row.getCell(c);
                 let value = cell.value;
-                if (value && typeof value === 'object') {
+                if (value instanceof Date) {
+                    rowObj[letter] = dateToExcelSerial(value);
+                } else if (value && typeof value === 'object') {
+                    // ВАЖНО: только value.formula (мастер shared range) содержит текст формулы.
+                    // value.sharedFormula у sharing-ячеек = координата мастера, а не формула —
+                    // поэтому такие ячейки должны провалиться в ветку value.result и сохранить
+                    // готовое числовое значение, иначе HyperFormula выдаст #VALUE!.
                     if (value.formula) {
                         rowObj[letter] = '=' + value.formula;
-                    } else if (value.result !== undefined) {
-                        rowObj[letter] = value.result;
-                    } else if (value.richText) {
-                        rowObj[letter] = value.richText.map(t => t.text).join('');
-                    } else if (value instanceof Date) {
-                        rowObj[letter] = dateToExcelSerial(value);
-                    } else if (value.text) {
+                    } else if (value.error) {
+                        rowObj[letter] = value.error; // напр. "#REF!", "#DIV/0!"
+                    } else if (Array.isArray(value.richText)) {
+                        rowObj[letter] = value.richText.map(t => (t && t.text) ? t.text : '').join('');
+                    } else if (value.hyperlink && (value.text || value.hyperlink)) {
+                        rowObj[letter] = value.text ?? value.hyperlink;
+                    } else if (value.result !== undefined && value.result !== null) {
+                        rowObj[letter] = (value.result instanceof Date)
+                            ? dateToExcelSerial(value.result)
+                            : value.result;
+                    } else if (value.text !== undefined && value.text !== null) {
                         rowObj[letter] = value.text;
-                    } else {
-                        rowObj[letter] = String(value);
                     }
-                } else if (value instanceof Date) {
-                    rowObj[letter] = dateToExcelSerial(value);
+                    // Неизвестные структуры просто пропускаем — лучше пустая ячейка,
+                    // чем "[object Object]".
                 } else if (value !== null && value !== undefined) {
                     rowObj[letter] = value;
                 }

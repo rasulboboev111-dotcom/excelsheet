@@ -12,10 +12,10 @@ use App\Http\Controllers\Auth\VerifyEmailController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
-    Route::get('register', [RegisteredUserController::class, 'create'])
-                ->name('register');
-
-    Route::post('register', [RegisteredUserController::class, 'store']);
+    // Публичная регистрация отключена — юзеров создаёт только админ через /users.
+    // Маршрут оставлен с именем 'register', чтобы Route::has('register') корректно
+    // возвращал false и Welcome.vue не показывал ссылку.
+    Route::get('register', function () { abort(404); })->name('register.disabled');
 
     Route::get('login', [AuthenticatedSessionController::class, 'create'])
                 ->name('login');

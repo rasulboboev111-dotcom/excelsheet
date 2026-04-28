@@ -27,19 +27,33 @@ Route::get('/', function () {
 
 use App\Http\Controllers\SheetController;
 use App\Http\Controllers\SheetPermissionController;
+use App\Http\Controllers\UserController;
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [SheetController::class, 'index'])->name('dashboard');
-    Route::post('/sheets', [SheetController::class, 'store'])->name('sheets.store');
-    Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])->name('sheets.importSheet');
     Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])->name('sheets.update');
-    Route::delete('/sheets/{sheet}', [SheetController::class, 'destroy'])->name('sheets.destroy');
     Route::post('/sheets/{sheet}/data', [SheetController::class, 'updateData'])->name('sheets.updateData');
     Route::post('/sheets/{sheet}/insert-row', [SheetController::class, 'insertRow'])->name('sheets.insertRow');
     Route::post('/sheets/{sheet}/delete-row', [SheetController::class, 'deleteRow'])->name('sheets.deleteRow');
-    
+
+    // Импорт xlsx — любой залогиненный юзер. Импортёр становится owner новых листов
+    // и может их редактировать. Видимость для других юзеров остаётся за админом.
+    Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])->name('sheets.importSheet');
+});
+
+// Только админ: создание пустого листа, удаление, права, управление пользователями.
+Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
+    Route::post('/sheets', [SheetController::class, 'store'])->name('sheets.store');
+    Route::delete('/sheets/{sheet}', [SheetController::class, 'destroy'])->name('sheets.destroy');
+
     Route::get('/sheets/{sheet}/permissions', [SheetPermissionController::class, 'index'])->name('sheets.permissions');
     Route::post('/sheets/{sheet}/permissions', [SheetPermissionController::class, 'update'])->name('sheets.permissions.update');
+    Route::post('/sheets-permissions/bulk', [SheetPermissionController::class, 'bulk'])->name('sheets.permissions.bulk');
+
+    Route::get('/users', [UserController::class, 'index'])->name('users.index');
+    Route::post('/users', [UserController::class, 'store'])->name('users.store');
+    Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
+    Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
 });
 
 Route::middleware('auth')->group(function () {

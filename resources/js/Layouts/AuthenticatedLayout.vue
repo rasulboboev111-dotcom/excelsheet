@@ -32,6 +32,9 @@ const showingNavigationDropdown = ref(false);
                                 <NavLink :href="route('dashboard')" :active="route().current('dashboard')">
                                     Dashboard
                                 </NavLink>
+                                <NavLink v-if="$page.props.auth?.isAdmin" :href="route('users.index')" :active="route().current('users.*')">
+                                    Пользователи
+                                </NavLink>
                             </div>
                         </div>
 

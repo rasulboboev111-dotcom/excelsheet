@@ -312,6 +312,8 @@ onUnmounted(() => {
     window.removeEventListener('mousemove', trackMouse);
     document.removeEventListener('mousemove', onRowResizeMove);
     document.removeEventListener('mouseup', onRowResizeEnd);
+    if (growRowsTimer) { clearTimeout(growRowsTimer); growRowsTimer = null; }
+    if (growColsTimer) { clearTimeout(growColsTimer); growColsTimer = null; }
     if (resizeTooltipEl) {
         resizeTooltipEl.remove();
         resizeTooltipEl = null;

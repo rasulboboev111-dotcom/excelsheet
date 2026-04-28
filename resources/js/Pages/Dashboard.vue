@@ -1,10 +1,10 @@
 <script setup>
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
-import { Head, router, useForm } from '@inertiajs/vue3';
+import { Head, Link, router, useForm } from '@inertiajs/vue3';
 import ExcelTable from '@/Components/ExcelTable.vue';
 import ExcelRibbon from '@/Components/ExcelRibbon.vue';
 import ExcelContextMenu from '@/Components/ExcelContextMenu.vue';
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { useSheetMeta } from '@/Composables/useSheetMeta';
 import { readXlsxFile, writeXlsxFile } from '@/Composables/xlsxIO';
@@ -17,6 +17,8 @@ const props = defineProps({
     sheets: Array,
     activeSheet: Object,
     initialData: Array,
+    canEdit: { type: Boolean, default: false },
+    isAdmin: { type: Boolean, default: false },
 });
 
 const showPermissionsModal = ref(false);
@@ -75,6 +77,52 @@ const handleColumnResized = ({ field, width }) => {
 
 const handleRowResized = ({ rowIndex, height }) => {
     sheetMeta.value.rowHeights = { ...sheetMeta.value.rowHeights, [rowIndex]: height };
+};
+
+// При вставке строки на позицию `at` все абсолютные индексы строк >= at
+// в merges/rowHeights должны сдвинуться на +1. Иначе подсветка merge'ев "уезжает".
+const shiftMetaRowsOnInsert = (at) => {
+    const merges = (sheetMeta.value.merges || []).map(m => {
+        if (m.row >= at) return { ...m, row: m.row + 1 };
+        // Если вставка попала ВНУТРЬ существующего merge — растягиваем его на одну строку.
+        if (m.row < at && m.row + m.rowSpan > at) return { ...m, rowSpan: m.rowSpan + 1 };
+        return m;
+    });
+    const rh = {};
+    Object.entries(sheetMeta.value.rowHeights || {}).forEach(([k, v]) => {
+        const r = parseInt(k, 10);
+        if (Number.isNaN(r)) return;
+        rh[r >= at ? r + 1 : r] = v;
+    });
+    sheetMeta.value.merges = merges;
+    sheetMeta.value.rowHeights = rh;
+};
+
+// При удалении строки с индексом `at`: уменьшаем rowSpan мерджей, покрывающих её,
+// удаляем те, что схлопнулись до 0 строк, сдвигаем индексы строк >= at на -1.
+const shiftMetaRowsOnDelete = (at) => {
+    const merges = [];
+    (sheetMeta.value.merges || []).forEach(m => {
+        const last = m.row + m.rowSpan - 1;
+        if (at < m.row) {
+            merges.push({ ...m, row: m.row - 1 });
+        } else if (at >= m.row && at <= last) {
+            const newSpan = m.rowSpan - 1;
+            if (newSpan >= 1) merges.push({ ...m, rowSpan: newSpan });
+            // newSpan === 0 — merge исчезает (был на одну строку и её удалили)
+        } else {
+            // at > last — merge выше удалённой строки, не трогаем
+            merges.push(m);
+        }
+    });
+    const rh = {};
+    Object.entries(sheetMeta.value.rowHeights || {}).forEach(([k, v]) => {
+        const r = parseInt(k, 10);
+        if (Number.isNaN(r) || r === at) return;
+        rh[r > at ? r - 1 : r] = v;
+    });
+    sheetMeta.value.merges = merges;
+    sheetMeta.value.rowHeights = rh;
 };
 
 // Статистика по выделению (Excel показывает в нижней панели). Лимит на скан, чтобы не лагать.
@@ -259,14 +307,14 @@ const saveUndoState = (changes) => {
     if (undoStack.value.length > maxStackSize) undoStack.value.shift();
 };
 
-const undo = () => {
+const undo = async () => {
     if (undoStack.value.length === 0 || isUndoing.value) return;
-    
+
     isUndoing.value = true;
     const changes = undoStack.value.pop();
     const redoChanges = [];
     const affectedRowRefs = new Set();
-    
+
     try {
         changes.forEach(change => {
             const { dataRef, field, oldValue, oldStyle } = change;
@@ -284,18 +332,21 @@ const undo = () => {
         redoStack.value.push(redoChanges);
         syncChangesToServer(Array.from(affectedRowRefs));
     } finally {
-        setTimeout(() => { isUndoing.value = false; }, 100);
+        // Снимаем флаг после Vue-флаша/тика — это ловит синхронные ag-grid колбэки,
+        // но не блокирует следующий Ctrl+Z дольше необходимого.
+        await nextTick();
+        isUndoing.value = false;
     }
 };
 
-const redo = () => {
+const redo = async () => {
     if (redoStack.value.length === 0 || isUndoing.value) return;
-    
+
     isUndoing.value = true;
     const changes = redoStack.value.pop();
     const undoChanges = [];
     const affectedRowRefs = new Set();
-    
+
     try {
         changes.forEach(change => {
             const { dataRef, field, oldValue, oldStyle } = change;
@@ -313,7 +364,8 @@ const redo = () => {
         undoStack.value.push(undoChanges);
         syncChangesToServer(Array.from(affectedRowRefs));
     } finally {
-        setTimeout(() => { isUndoing.value = false; }, 100);
+        await nextTick();
+        isUndoing.value = false;
     }
 };
 
@@ -357,6 +409,7 @@ watch(() => currentCellData.value.value, (newValue) => {
         isFormulaBarUpdating.value = false;
         return;
     }
+    if (!props.canEdit) return;
     if (currentCellData.value.rowIndex !== null && currentCellData.value.colId !== null) {
         const row = tableData.value[currentCellData.value.rowIndex];
         if (row && row[currentCellData.value.colId] !== newValue) {
@@ -408,8 +461,12 @@ const applyFormatPainter = (selection) => {
 };
 
 const handleCellValueChanged = (event) => {
+    // Read-only safeguard. ag-grid с readOnly editable=false уже блокирует редактирование,
+    // но если событие как-то прошло (программно, например), не записываем на сервер.
+    if (!props.canEdit) return;
+
     const { data, node, oldValue, column } = event;
-    
+
     // НЕ сохраняем в Undo, если это само действие Undo/Redo
     if (column && oldValue !== undefined && !isUndoing.value) {
         const field = column.getColId();
@@ -486,6 +543,16 @@ const applyBorder = (style, type, edges) => {
 };
 
 const handleRibbonAction = ({ type, value }) => {
+    // Read-only safeguard.
+    // export / import — доступны всем залогиненным юзерам.
+    // import создаёт новые листы (юзер становится owner).
+    // всё остальное — требует canEdit.
+    if (type === 'export' || type === 'import') {
+        // ok
+    } else if (!props.canEdit) {
+        return;
+    }
+
     // Глобальные действия, которые не требуют активной ячейки
     if (type === 'import') { triggerImport(); return; }
     if (type === 'export') { exportXlsx(); return; }
@@ -589,6 +656,8 @@ const handleRibbonAction = ({ type, value }) => {
         columnDefs.value.forEach(col => { newRow[col.field] = ''; });
         const at = activeRow !== null ? activeRow + 1 : tableData.value.length;
         tableData.value.splice(at, 0, newRow);
+        // Сдвиг merges и rowHeights, чтобы они не "уехали" относительно данных.
+        shiftMetaRowsOnInsert(at);
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
         router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
         tableApi.value?.refreshCells({ force: true });
@@ -599,6 +668,7 @@ const handleRibbonAction = ({ type, value }) => {
     if (type === 'deleteRow') {
         if (activeRow === null || tableData.value.length <= 1) return;
         tableData.value.splice(activeRow, 1);
+        shiftMetaRowsOnDelete(activeRow);
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
         router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
         tableApi.value?.refreshCells({ force: true });
@@ -771,6 +841,7 @@ const handleRibbonAction = ({ type, value }) => {
 };
 
 const handleRangeClear = ({ targetRows, colFields }) => {
+    if (!props.canEdit) return;
     const undoChanges = [];
     targetRows.forEach(row => {
         colFields.forEach(field => {
@@ -792,6 +863,8 @@ const handleRangeClear = ({ targetRows, colFields }) => {
 };
 
 const handleMenuAction = async (action) => {
+    // Read-only режим: разрешаем только copy.
+    if (!props.canEdit && action !== 'copy') return;
     const params = cellContextMenu.value.params;
     if (!params) return;
     const field = params.column?.getColId();
@@ -1037,7 +1110,11 @@ const saveSheetName = (sheet) => {
         editingSheetId.value = null;
     }
 };
-const openTabContextMenu = (event, sheet) => { tabContextMenu.value = { show: true, x: event.clientX, y: event.clientY - 100, sheet: sheet }; };
+const openTabContextMenu = (event, sheet) => {
+    // Контекстное меню вкладки (переименовать/скрыть/удалить) — только для админа.
+    if (!props.isAdmin) return;
+    tabContextMenu.value = { show: true, x: event.clientX, y: event.clientY - 100, sheet: sheet };
+};
 const closeContextMenu = () => { tabContextMenu.value.show = false; };
 const deleteSheet = (sheet) => { if (confirm(`Удалить лист "${sheet.name}"?`)) router.delete(route('sheets.destroy', sheet.id)); closeContextMenu(); };
 
@@ -1097,17 +1174,76 @@ const handleFileChosen = async (e) => {
             return;
         }
 
-        const msg = failed > 0
-            ? `Создано листов: ${created.length}. Ошибок: ${failed}.`
-            : `Создано листов: ${created.length}.`;
-        alert(msg);
+        // Не-админу права раздавать нельзя — он стал owner новых листов и может их
+        // редактировать сам. Просто открываем первый импортированный лист.
+        if (!props.isAdmin) {
+            const msg = failed > 0
+                ? `Создано листов: ${created.length}. Ошибок: ${failed}.`
+                : `Создано листов: ${created.length}.`;
+            alert(msg);
+            router.visit(route('dashboard', { sheet_id: created[0] }));
+            return;
+        }
 
-        // Переходим на первый созданный лист — Inertia подхватит обновлённый список вкладок
-        router.visit(route('dashboard', { sheet_id: created[0] }));
+        // Админу открываем модалку «Назначить права» для всех созданных листов.
+        // Если её закрыть/пропустить — просто перейдём на первый импортированный лист.
+        try {
+            // Подтянем список юзеров через permissions endpoint первого нового листа.
+            const r = await axios.get(route('sheets.permissions', created[0]));
+            bulkPermissions.users = (r.data?.allUsers || []).map(u => ({
+                id: u.id, name: u.name, email: u.email, role: 'none'
+            }));
+        } catch (_) { bulkPermissions.users = []; }
+
+        bulkPermissions.sheetIds = created;
+        bulkPermissions.sheetNames = wb.sheets.slice(0, created.length).map(s => s.name);
+        bulkPermissions.failed = failed;
+        bulkPermissions.show = true;
     } catch (err) {
         console.error(err);
         alert('Не удалось прочитать файл: ' + (err?.message || err));
     }
+};
+
+// --- Bulk-permissions модалка после импорта ---
+const bulkPermissions = reactive({
+    show: false,
+    sheetIds: [],
+    sheetNames: [],
+    failed: 0,
+    users: [],     // [{id, name, email, role}]
+    saving: false
+});
+
+const submitBulkPermissions = async () => {
+    if (bulkPermissions.saving) return;
+    bulkPermissions.saving = true;
+    try {
+        // Отправляем по одному запросу на юзера со всеми листами.
+        // Юзеров с role=none пропускаем (детач не нужен — листы только что созданы, их там нет).
+        const tasks = bulkPermissions.users
+            .filter(u => u.role && u.role !== 'none')
+            .map(u => axios.post(route('sheets.permissions.bulk'), {
+                sheet_ids: bulkPermissions.sheetIds,
+                user_id: u.id,
+                role: u.role
+            }));
+        await Promise.all(tasks);
+    } catch (err) {
+        console.error(err);
+        alert('Часть прав не удалось назначить. См. консоль.');
+    } finally {
+        bulkPermissions.saving = false;
+        const firstId = bulkPermissions.sheetIds[0];
+        bulkPermissions.show = false;
+        router.visit(route('dashboard', { sheet_id: firstId }));
+    }
+};
+
+const skipBulkPermissions = () => {
+    const firstId = bulkPermissions.sheetIds[0];
+    bulkPermissions.show = false;
+    router.visit(route('dashboard', { sheet_id: firstId }));
 };
 
 const exportXlsx = async () => {
@@ -1146,20 +1282,30 @@ const handleGlobalKeydown = (e) => {
     const inField = tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable);
     if (!e.ctrlKey) return;
     const k = e.key.toLowerCase();
-    // Undo / Redo — работают всегда
+    // Find — read-only safe.
+    if (k === 'h' || k === 'р' || k === 'f' || k === 'а') {
+        if (inField) return;
+        e.preventDefault();
+        openFindReplace();
+        return;
+    }
+    // Copy — read-only safe (просто читает значения в буфер).
+    if ((k === 'c' || k === 'с') && !inField) {
+        e.preventDefault();
+        handleRibbonAction({ type: 'copy' });
+        return;
+    }
+    // Всё остальное — мутации, требуют canEdit.
+    if (!props.canEdit) return;
+
     if (k === 'z' || k === 'я') { e.preventDefault(); undo(); return; }
     if (k === 'y' || k === 'н') { e.preventDefault(); redo(); return; }
     if (inField) return;
-    // Copy / Cut / Paste
-    if (k === 'c' || k === 'с') { e.preventDefault(); handleRibbonAction({ type: 'copy' }); return; }
     if (k === 'x' || k === 'ч') { e.preventDefault(); handleRibbonAction({ type: 'cut' }); return; }
     if (k === 'v' || k === 'м') { e.preventDefault(); handleRibbonAction({ type: 'paste' }); return; }
-    // Bold / Italic / Underline
     if (k === 'b' || k === 'и') { e.preventDefault(); handleRibbonAction({ type: 'bold' }); return; }
     if (k === 'i' || k === 'ш') { e.preventDefault(); handleRibbonAction({ type: 'italic' }); return; }
     if (k === 'u' || k === 'г') { e.preventDefault(); handleRibbonAction({ type: 'underline' }); return; }
-    if (k === 'h' || k === 'р') { e.preventDefault(); openFindReplace(); return; }
-    if (k === 'f' || k === 'а') { e.preventDefault(); openFindReplace(); return; }
 };
 
 const handleGlobalClick = () => {
@@ -1191,15 +1337,27 @@ onUnmounted(() => {
                 <div class="hover:bg-white/10 px-2 py-1 rounded cursor-pointer text-sm font-medium">{{ activeSheet?.name }} - Сохранено</div>
             </div>
             <div class="flex items-center gap-3">
-                <button @click="openPermissionsModal" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors">Права доступа</button>
+                <span v-if="!canEdit && activeSheet" class="bg-yellow-300/80 text-yellow-900 text-xs px-2 py-1 rounded font-semibold">
+                    Только просмотр
+                </span>
+                <span v-if="isAdmin && activeSheet?.owner" class="bg-white/10 text-xs px-2 py-1 rounded">
+                    Импортировал: <b>{{ activeSheet.owner.name }}</b>
+                </span>
+                <button @click="triggerImport" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm" title="Импортировать .xlsx">
+                    📂 Импорт
+                </button>
+                <Link v-if="isAdmin" :href="route('users.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Пользователи</Link>
+                <button v-if="isAdmin" @click="openPermissionsModal" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors">Права доступа</button>
                 <div class="flex items-center gap-2">
-                    <span class="text-sm font-medium">Admin</span>
-                    <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center font-bold border border-white/20">A</div>
+                    <span class="text-sm font-medium">{{ $page.props.auth?.user?.name || 'User' }}</span>
+                    <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center font-bold border border-white/20">{{ ($page.props.auth?.user?.name || '?').charAt(0).toUpperCase() }}</div>
                 </div>
             </div>
         </div>
-        
-        <ExcelRibbon @action="handleRibbonAction" :activeCell="activeCellInfo" />
+
+        <div v-if="canEdit" :class="{ 'pointer-events-none opacity-50': !canEdit }">
+            <ExcelRibbon @action="handleRibbonAction" :activeCell="activeCellInfo" />
+        </div>
 
         <div class="flex-1 flex flex-col bg-white overflow-hidden min-h-0">
             <div v-if="showPermissionsModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
@@ -1236,14 +1394,28 @@ onUnmounted(() => {
                     <button class="text-gray-400 hover:text-red-600 text-xs">✕</button><button class="text-gray-400 hover:text-green-600 text-xs">✓</button>
                     <div class="text-[#217346] font-serif italic font-bold px-1 cursor-pointer">fx</div>
                 </div>
-                <input v-model="currentCellData.value" type="text" class="flex-1 border-none focus:ring-0 py-0.5 text-sm px-2" />
+                <input v-model="currentCellData.value" type="text" :readonly="!canEdit"
+                       :class="['flex-1 border-none focus:ring-0 py-0.5 text-sm px-2', !canEdit && 'bg-gray-50 text-gray-500']" />
             </div>
 
             <div class="overflow-hidden relative bg-white" style="height: calc(100vh - 200px);">
+                <div v-if="!activeSheet" class="h-full flex items-center justify-center text-gray-500 text-sm flex-col gap-3">
+                    <svg class="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                    <div v-if="isAdmin" class="text-center">Создайте новый лист «+» или импортируйте .xlsx.</div>
+                    <div v-else class="text-center">
+                        У вас пока нет листов.<br>
+                        Импортируйте .xlsx — вы станете владельцем и сможете его редактировать.<br>
+                        <span class="text-xs text-gray-400">Чтобы получить доступ к чужим листам — обратитесь к администратору.</span>
+                    </div>
+                    <button @click="triggerImport" class="px-4 py-2 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">
+                        📂 Импортировать .xlsx
+                    </button>
+                </div>
                 <ExcelTable v-if="activeSheet" :rowData="tableDataForGrid" :columnDefs="columnDefs"
                     :pinnedTopRowData="pinnedTopRowData" :freezeRow="!!sheetMeta.freezeRow"
                     :merges="sheetMeta.merges" :validations="sheetMeta.validations"
                     :colWidths="sheetMeta.colWidths" :rowHeights="sheetMeta.rowHeights"
+                    :readOnly="!canEdit"
                     @cell-value-changed="handleCellValueChanged" @cell-focused="handleCellFocused"
                     @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged"
                     @range-clear="handleRangeClear" @ready="handleTableReady"
@@ -1259,13 +1431,13 @@ onUnmounted(() => {
                         <div v-for="(sheet, index) in visibleSheets" :key="sheet.id" class="h-full flex items-center">
                             <div class="h-full flex items-center relative transition-colors" :class="[sheet.id === activeSheet?.id ? 'bg-white' : 'bg-transparent hover:bg-gray-200', isSheetHidden(sheet.id) ? 'opacity-50' : '']" @contextmenu.prevent="openTabContextMenu($event, sheet)">
                                 <input v-if="editingSheetId === sheet.id" v-model="newSheetName" @blur="saveSheetName(sheet)" @keyup.enter="saveSheetName(sheet)" class="border-none focus:ring-0 outline-none px-4 py-0 w-24 text-[11px] font-bold bg-white h-full" v-focus />
-                                <button v-else @click="router.visit(route('dashboard', { sheet_id: sheet.id }))" @dblclick="startEditing(sheet)" class="px-5 h-full text-[11px] whitespace-nowrap" :class="sheet.id === activeSheet?.id ? 'text-[#217346] font-bold shadow-[0_-2px_0_0_#217346_inset]' : 'text-gray-700'">
+                                <button v-else @click="router.visit(route('dashboard', { sheet_id: sheet.id }))" @dblclick="isAdmin && startEditing(sheet)" class="px-5 h-full text-[11px] whitespace-nowrap" :class="sheet.id === activeSheet?.id ? 'text-[#217346] font-bold shadow-[0_-2px_0_0_#217346_inset]' : 'text-gray-700'">
                                     {{ sheet.name }}<span v-if="isSheetHidden(sheet.id)" class="ml-1 text-[9px] text-gray-500">(скрыт)</span>
                                 </button>
                             </div>
                             <div v-if="index < visibleSheets.length - 1 && sheet.id !== activeSheet?.id && visibleSheets[index+1].id !== activeSheet?.id" class="h-4 w-[1px] bg-gray-400"></div>
                         </div>
-                        <button @click="router.post(route('sheets.store'))" class="ml-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-300 text-gray-500 transition-colors" title="Добавить лист"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg></button>
+                        <button v-if="isAdmin" @click="router.post(route('sheets.store'))" class="ml-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-300 text-gray-500 transition-colors" title="Добавить лист"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg></button>
                         <button @click="showHidden = !showHidden" class="ml-2 px-2 h-6 flex items-center justify-center rounded hover:bg-gray-300 text-gray-600 text-[10px]" title="Показать скрытые листы">{{ showHidden ? 'Скрыть скрытые' : 'Показать скрытые' }}</button>
                     </div>
                 </div>
@@ -1322,6 +1494,61 @@ onUnmounted(() => {
             <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="startEditing(tabContextMenu.sheet); closeContextMenu()">Переименовать</div>
             <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="handleToggleHideSheet(tabContextMenu.sheet)">{{ isSheetHidden(tabContextMenu.sheet?.id) ? 'Показать' : 'Скрыть' }}</div>
             <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer text-red-600" @click="deleteSheet(tabContextMenu.sheet)">Удалить</div>
+        </div>
+
+        <!-- Модалка bulk-назначения прав после импорта -->
+        <div v-if="bulkPermissions.show" class="fixed inset-0 z-50 flex items-start justify-center pt-12 bg-black/40">
+            <div class="bg-white rounded-lg shadow-xl w-[640px] max-h-[85vh] flex flex-col">
+                <div class="p-4 border-b">
+                    <h3 class="font-bold text-base">Назначить права на новые листы</h3>
+                    <p class="text-xs text-gray-600 mt-1">
+                        Импортировано листов: <b>{{ bulkPermissions.sheetIds.length }}</b><span v-if="bulkPermissions.failed > 0">, ошибок: <b>{{ bulkPermissions.failed }}</b></span>.
+                        Выбранная роль будет применена ко всем перечисленным ниже листам сразу.
+                    </p>
+                    <details class="mt-2">
+                        <summary class="text-xs text-gray-500 cursor-pointer">Список листов ({{ bulkPermissions.sheetNames.length }})</summary>
+                        <ul class="text-xs text-gray-600 mt-1 list-disc pl-5 max-h-24 overflow-y-auto">
+                            <li v-for="(n, i) in bulkPermissions.sheetNames" :key="i">{{ n }}</li>
+                        </ul>
+                    </details>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4">
+                    <div v-if="bulkPermissions.users.length === 0" class="text-sm text-gray-500 italic">
+                        Нет других пользователей в системе. Создайте их на странице «Пользователи».
+                    </div>
+                    <table v-else class="w-full text-sm">
+                        <thead class="text-left">
+                            <tr class="border-b">
+                                <th class="pb-2">Пользователь</th>
+                                <th class="pb-2 w-44">Роль на этих листах</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="u in bulkPermissions.users" :key="u.id" class="border-b last:border-0">
+                                <td class="py-2">
+                                    <div class="font-medium">{{ u.name }}</div>
+                                    <div class="text-xs text-gray-500">{{ u.email }}</div>
+                                </td>
+                                <td class="py-2">
+                                    <select v-model="u.role" class="text-sm border-gray-300 rounded p-1 w-full">
+                                        <option value="none">Нет доступа</option>
+                                        <option value="viewer">Просмотр</option>
+                                        <option value="editor">Редактирование</option>
+                                    </select>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="p-4 border-t flex items-center justify-end gap-2">
+                    <button @click="skipBulkPermissions" :disabled="bulkPermissions.saving"
+                            class="px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300">Пропустить</button>
+                    <button @click="submitBulkPermissions" :disabled="bulkPermissions.saving"
+                            class="px-4 py-1.5 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39] disabled:opacity-50">
+                        {{ bulkPermissions.saving ? 'Сохранение…' : 'Назначить и открыть' }}
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 </template>
