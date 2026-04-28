@@ -524,19 +524,40 @@ const redo = async () => {
     }
 };
 
-const syncChangesToServer = (rows) => {
+// === Дебаунс-очередь записи изменений на сервер ===
+// Каждый ввод символа в строке формул и каждое изменение ячейки порождают запрос.
+// Без буферизации это: 1) топит сеть кучей POST'ов, 2) перерисовка после ответа
+// убивает активный редактор. Копим уникальные строки и шлём один запрос раз/400мс.
+const _pendingSyncRows = new Set();
+let _pendingSyncTimer = null;
+const SYNC_DEBOUNCE_MS = 400;
+
+const _flushPendingSync = () => {
+    if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+    if (_pendingSyncRows.size === 0) return;
+    if (!props.activeSheet?.id) { _pendingSyncRows.clear(); return; }
+
+    const rowsToSync = Array.from(_pendingSyncRows);
+    _pendingSyncRows.clear();
     const updatedRows = [];
-    rows.forEach(row => {
+    rowsToSync.forEach(row => {
         let idx = tableData.value.indexOf(row);
         if (idx === -1) idx = tableData.value.findIndex(r => r.id === row.id);
         if (idx !== -1) updatedRows.push({ row_index: idx, data: row });
     });
+    if (updatedRows.length === 0) return;
 
-    if (updatedRows.length > 0) {
-        router.post(route('sheets.updateData', props.activeSheet.id), { rows: updatedRows },
+    router.post(route('sheets.updateData', props.activeSheet.id), { rows: updatedRows },
         { preserveScroll: true, preserveState: true });
-    }
-    tableApi.value?.redrawRows();
+};
+
+const syncChangesToServer = (rows) => {
+    if (!Array.isArray(rows)) rows = [rows];
+    rows.forEach(r => { if (r) _pendingSyncRows.add(r); });
+    if (_pendingSyncTimer) clearTimeout(_pendingSyncTimer);
+    _pendingSyncTimer = setTimeout(_flushPendingSync, SYNC_DEBOUNCE_MS);
+    // ВАЖНО: больше НЕ дёргаем redrawRows() здесь. Он убивал активный редактор
+    // у пользователя. Vue-реактивность сама перерисует ячейки при мутации tableData.
 };
 
 const handleTableReady = (api) => { tableApi.value = api; };
@@ -636,9 +657,8 @@ const handleCellValueChanged = (event) => {
         rowIndex = tableData.value.indexOf(data);
     }
     if (rowIndex >= 0) {
-        router.post(route('sheets.updateData', props.activeSheet.id), {
-            rows: [{ row_index: rowIndex, data: data }]
-        }, { preserveScroll: true, preserveState: true });
+        // В общую дебаунс-очередь — единый канал записи на сервер.
+        syncChangesToServer([data]);
     }
 };
 
@@ -1546,14 +1566,23 @@ const handleGlobalClick = () => {
     if (tabContextMenu.value.show) closeContextMenu();
 };
 
+// Перед навигацией Inertia (смена листа, выход) — досылаем буфер несохранённых правок.
+let _removeInertiaBefore = null;
+
 onMounted(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('click', handleGlobalClick);
+    // Если пользователь закрывает вкладку с не дошедшими до сервера правками — досылаем.
+    window.addEventListener('beforeunload', _flushPendingSync);
+    _removeInertiaBefore = router.on('before', () => { _flushPendingSync(); });
 });
 
 onUnmounted(() => {
+    _flushPendingSync(); // финальный сброс при размонтировании компонента
     window.removeEventListener('keydown', handleGlobalKeydown);
     window.removeEventListener('click', handleGlobalClick);
+    window.removeEventListener('beforeunload', _flushPendingSync);
+    if (_removeInertiaBefore) _removeInertiaBefore();
 });
 </script>
 
