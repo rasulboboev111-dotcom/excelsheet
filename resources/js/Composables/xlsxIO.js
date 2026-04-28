@@ -290,17 +290,13 @@ export async function writeXlsxFile(filename, sheets) {
             state: sheet.hidden ? 'hidden' : 'visible'
         });
 
-        // Column widths
+        // Column widths only — БЕЗ header, чтобы exceljs не вставлял авто-шапку.
+        // Данные пишем начиная с row 1 (как ожидает наш импорт).
         const cols = (sheet.columnDefs || []).map(c => {
             const w = sheet.colWidths?.[c.field];
-            return { header: c.headerName || c.field, key: c.field, width: w ? Math.max(8, w / 7) : 12 };
+            return { key: c.field, width: w ? Math.max(8, w / 7) : 12 };
         });
         ws.columns = cols;
-
-        // We don't want exceljs auto-header — clear and write data manually starting from row 1
-        // Re-add columns without header
-        ws.spliceRows(1, 1);
-        ws.columns = cols.map(c => ({ key: c.key, width: c.width }));
 
         // Rows
         (sheet.rowData || []).forEach((rowObj, ri) => {

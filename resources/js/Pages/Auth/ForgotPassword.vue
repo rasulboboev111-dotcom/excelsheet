@@ -21,39 +21,30 @@ const submit = () => {
 
 <template>
     <GuestLayout>
-        <Head title="Forgot Password" />
+        <Head title="Восстановление пароля" />
 
-        <div class="mb-4 text-sm text-gray-600">
-            Forgot your password? No problem. Just let us know your email address and we will email you a password reset
-            link that will allow you to choose a new one.
-        </div>
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Забыли пароль?</h2>
+        <p class="text-sm text-gray-500 mb-5">
+            Укажите email — на него придёт ссылка для сброса пароля.
+        </p>
 
-        <div v-if="status" class="mb-4 font-medium text-sm text-green-600">
+        <div v-if="status" class="mb-4 px-3 py-2 rounded-md bg-green-50 border border-green-200 text-sm text-green-700">
             {{ status }}
         </div>
 
-        <form @submit.prevent="submit">
+        <form @submit.prevent="submit" class="space-y-4">
             <div>
-                <InputLabel for="email" value="Email" />
-
-                <TextInput
-                    id="email"
-                    type="email"
-                    class="mt-1 block w-full"
-                    v-model="form.email"
-                    required
-                    autofocus
-                    autocomplete="username"
-                />
-
-                <InputError class="mt-2" :message="form.errors.email" />
+                <InputLabel for="email" value="Электронная почта" />
+                <TextInput id="email" type="email" class="mt-1 block w-full" v-model="form.email" required autofocus autocomplete="username" placeholder="вы@example.com" />
+                <InputError class="mt-1.5" :message="form.errors.email" />
             </div>
 
-            <div class="flex items-center justify-end mt-4">
-                <PrimaryButton :class="{ 'opacity-25': form.processing }" :disabled="form.processing">
-                    Email Password Reset Link
-                </PrimaryButton>
-            </div>
+            <button type="submit"
+                    :disabled="form.processing"
+                    :class="{ 'opacity-50 cursor-not-allowed': form.processing }"
+                    class="w-full px-4 py-2.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-semibold transition-colors">
+                {{ form.processing ? 'Отправка…' : 'Отправить ссылку' }}
+            </button>
         </form>
     </GuestLayout>
 </template>

@@ -107,6 +107,125 @@ const onWheelZoom = (e) => {
 };
 const openZoomDialog = () => { zoomDialogValue.value = zoom.value; showZoomDialog.value = true; };
 
+// === Sort dialog ===
+const sortDialog = ref({ show: false, column: null, order: 'asc' });
+const applySortFromDialog = () => {
+    const col = sortDialog.value.column;
+    const dir = sortDialog.value.order === 'desc' ? -1 : 1;
+    sortDialog.value.show = false;
+    if (!col) return;
+    const num = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return isNaN(n) ? null : n; };
+    // Если первая строка закреплена — не вовлекаем её в сортировку, она остаётся шапкой.
+    const frozen = !!sheetMeta.value?.freezeRow;
+    const head = frozen && tableData.value.length > 0 ? [tableData.value[0]] : [];
+    const body = frozen ? tableData.value.slice(1) : tableData.value.slice();
+    body.sort((a, b) => {
+        const va = a[col], vb = b[col];
+        const na = num(va), nb = num(vb);
+        if (na !== null && nb !== null) return (na - nb) * dir;
+        return String(va ?? '').localeCompare(String(vb ?? ''), 'ru') * dir;
+    });
+    tableData.value = [...head, ...body];
+    const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
+    router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+    tableApi.value?.refreshCells({ force: true });
+};
+
+// === Fill (Down/Up/Right/Left) ===
+const applyFill = (dir) => {
+    if (!currentSelection.value) return;
+    const { start, end } = currentSelection.value;
+    const r1 = Math.min(start.row, end.row);
+    const r2 = Math.max(start.row, end.row);
+    const c1 = Math.min(start.col, end.col);
+    const c2 = Math.max(start.col, end.col);
+    const cols = columnDefs.value.slice(c1, c2 + 1).map(c => c.field);
+    const rowsArr = tableData.value.slice(r1, r2 + 1);
+    const undoChanges = [];
+
+    const fillCol = (ci) => {
+        const f = cols[ci];
+        const src = dir === 'up' ? rowsArr[rowsArr.length - 1] : rowsArr[0];
+        const srcVal = src[f];
+        const srcStyle = src[f + '_style'] ? JSON.parse(JSON.stringify(src[f + '_style'])) : null;
+        rowsArr.forEach(row => {
+            if (row === src) return;
+            undoChanges.push({ dataRef: row, field: f, oldValue: row[f], oldStyle: row[f + '_style'] ? JSON.parse(JSON.stringify(row[f + '_style'])) : null });
+            row[f] = srcVal;
+            row[f + '_style'] = srcStyle ? JSON.parse(JSON.stringify(srcStyle)) : null;
+        });
+    };
+    const fillRow = (ri) => {
+        const row = rowsArr[ri];
+        const srcField = dir === 'left' ? cols[cols.length - 1] : cols[0];
+        const srcVal = row[srcField];
+        const srcStyle = row[srcField + '_style'] ? JSON.parse(JSON.stringify(row[srcField + '_style'])) : null;
+        cols.forEach(f => {
+            if (f === srcField) return;
+            undoChanges.push({ dataRef: row, field: f, oldValue: row[f], oldStyle: row[f + '_style'] ? JSON.parse(JSON.stringify(row[f + '_style'])) : null });
+            row[f] = srcVal;
+            row[f + '_style'] = srcStyle ? JSON.parse(JSON.stringify(srcStyle)) : null;
+        });
+    };
+
+    if (dir === 'down' || dir === 'up') {
+        for (let ci = 0; ci < cols.length; ci++) fillCol(ci);
+    } else {
+        for (let ri = 0; ri < rowsArr.length; ri++) fillRow(ri);
+    }
+    saveUndoState(undoChanges);
+    syncChangesToServer(rowsArr);
+};
+
+// === Clear (All / Formats / Contents) ===
+const applyClear = (what) => {
+    if (!currentSelection.value) return;
+    const { start, end } = currentSelection.value;
+    const r1 = Math.min(start.row, end.row);
+    const r2 = Math.max(start.row, end.row);
+    const c1 = Math.min(start.col, end.col);
+    const c2 = Math.max(start.col, end.col);
+    const cols = columnDefs.value.slice(c1, c2 + 1).map(c => c.field);
+    const rowsArr = tableData.value.slice(r1, r2 + 1);
+    const undoChanges = [];
+    rowsArr.forEach(row => cols.forEach(f => {
+        undoChanges.push({ dataRef: row, field: f, oldValue: row[f], oldStyle: row[f + '_style'] ? JSON.parse(JSON.stringify(row[f + '_style'])) : null });
+        if (what === 'all' || what === 'contents') row[f] = '';
+        if (what === 'all' || what === 'formats') row[f + '_style'] = null;
+    }));
+    saveUndoState(undoChanges);
+    syncChangesToServer(rowsArr);
+};
+
+// === Format submenu (Cells group): row height / col width ===
+const applyCellsFormat = (type) => {
+    const { rowIndex, colId } = activeCellInfo.value;
+    if (type === 'format-rowHeight') {
+        if (rowIndex == null) {
+            alert('Сначала выделите ячейку в нужной строке.');
+            return;
+        }
+        const cur = sheetMeta.value.rowHeights?.[rowIndex] || 25;
+        const v = prompt('Высота строки (px):', cur);
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= 10 && n <= 500) {
+            sheetMeta.value.rowHeights = { ...sheetMeta.value.rowHeights, [rowIndex]: n };
+            tableApi.value?.onRowHeightChanged?.();
+        }
+    } else if (type === 'format-colWidth') {
+        if (!colId) {
+            alert('Сначала выделите ячейку в нужной колонке.');
+            return;
+        }
+        const cur = sheetMeta.value.colWidths?.[colId] || 100;
+        const v = prompt('Ширина столбца (px):', cur);
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= 20 && n <= 1000) {
+            sheetMeta.value.colWidths = { ...sheetMeta.value.colWidths, [colId]: n };
+        }
+    }
+};
+
 const handleColumnResized = ({ field, width }) => {
     sheetMeta.value.colWidths = { ...sheetMeta.value.colWidths, [field]: width };
 };
@@ -599,6 +718,56 @@ const handleRibbonAction = ({ type, value }) => {
     if (type === 'freezeRow') { handleToggleFreezeRow(); return; }
     if (type === 'freezeCol') { handleToggleFreezeCol(); return; }
     if (type === 'findReplace') { openFindReplace(); return; }
+    // === Найти — открывает Find&Replace независимо от выделения ===
+    if (type === 'find') { openFindReplace(); return; }
+
+    // === Сортировка — открывает диалог независимо от выделения ===
+    if (type === 'sort') {
+        const colDefault = activeCellInfo.value.colId || columnDefs.value[0]?.field;
+        sortDialog.value = { show: true, column: colDefault, order: 'asc' };
+        return;
+    }
+    if (type === 'sort-asc' || type === 'sort-desc') {
+        sortDialog.value = { show: true, column: activeCellInfo.value.colId || columnDefs.value[0]?.field, order: type === 'sort-desc' ? 'desc' : 'asc' };
+        applySortFromDialog();
+        return;
+    }
+
+    // === Формат (Cells group): высота строки / ширина колонки — корректно сообщит о невыделенной ячейке ===
+    if (type === 'format-rowHeight' || type === 'format-colWidth') {
+        applyCellsFormat(type);
+        return;
+    }
+
+    // === Действия, которым нужно выделение, но НЕ обязательно активная ячейка ===
+    if (type === 'fill-down' || type === 'fill-up' || type === 'fill-right' || type === 'fill-left' || type === 'fill') {
+        if (!currentSelection.value) { alert('Выделите диапазон ячеек.'); return; }
+        const dir = type === 'fill-up' ? 'up' : type === 'fill-right' ? 'right' : type === 'fill-left' ? 'left' : 'down';
+        applyFill(dir);
+        return;
+    }
+    if (type === 'clear-all' || type === 'clear-formats' || type === 'clear-contents') {
+        if (!currentSelection.value) { alert('Выделите ячейки, которые нужно очистить.'); return; }
+        const what = type === 'clear-all' ? 'all' : type === 'clear-formats' ? 'formats' : 'contents';
+        applyClear(what);
+        return;
+    }
+
+    // === Автосумма — пишет формулу в текущую ячейку (нужна активная ячейка) ===
+    if (type === 'autosum' || type.startsWith('autosum-')) {
+        const { rowIndex, colId } = activeCellInfo.value;
+        if (rowIndex == null || rowIndex < 1 || !colId) {
+            alert('Поставьте курсор в ячейку ниже значений, по которым нужно посчитать.');
+            return;
+        }
+        const fn = type === 'autosum' ? 'SUM' : type.split('-')[1].toUpperCase();
+        const row = tableData.value[rowIndex];
+        if (!row) return;
+        saveUndoState([{ dataRef: row, field: colId, oldValue: row[colId], oldStyle: null }]);
+        row[colId] = `=${fn}(${colId}1:${colId}${rowIndex})`;
+        syncChangesToServer([row]);
+        return;
+    }
 
     let { rowIndex: activeRow, colId: activeCol, rowData: activeRowData } = activeCellInfo.value;
     if (!activeRowData && activeRow !== null) activeRowData = tableData.value[activeRow];
@@ -708,66 +877,6 @@ const handleRibbonAction = ({ type, value }) => {
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
         router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
         tableApi.value?.refreshCells({ force: true });
-        return;
-    }
-
-    // === Автосумма ===
-    if (type === 'autosum') {
-        if (activeRow > 0) {
-            saveUndoState([{ dataRef: activeRowData, field: activeCol, oldValue: activeRowData[activeCol], oldStyle: null }]);
-            activeRowData[activeCol] = `=SUM(${activeCol}1:${activeCol}${activeRow})`;
-            syncChangesToServer([activeRowData]);
-        }
-        return;
-    }
-
-    // === Сортировка ===
-    if (type === 'sort') {
-        tableData.value.sort((a, b) => String(a[activeCol] || '').localeCompare(String(b[activeCol] || ''), 'ru'));
-        const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
-        tableApi.value?.refreshCells({ force: true });
-        return;
-    }
-
-    // === Заполнить (Fill Down) ===
-    if (type === 'fill') {
-        if (targetRowsData.length > 1 && activeCol) {
-            const topValue = targetRowsData[0][activeCol];
-            const topStyle = targetRowsData[0][activeCol + '_style'] ? JSON.parse(JSON.stringify(targetRowsData[0][activeCol + '_style'])) : null;
-            const uc = [];
-            for (let i = 1; i < targetRowsData.length; i++) {
-                const tr = targetRowsData[i];
-                uc.push({ dataRef: tr, field: activeCol, oldValue: tr[activeCol], oldStyle: tr[activeCol + '_style'] ? JSON.parse(JSON.stringify(tr[activeCol + '_style'])) : null });
-                tr[activeCol] = topValue;
-                tr[activeCol + '_style'] = topStyle ? JSON.parse(JSON.stringify(topStyle)) : null;
-            }
-            saveUndoState(uc);
-            syncChangesToServer(targetRowsData);
-        }
-        return;
-    }
-
-    // === Условное форматирование и таблицы (заглушки) ===
-    if (type === 'conditional' || type === 'formatTable') {
-        alert('Функция в разработке');
-        return;
-    }
-
-    // === Найти ===
-    if (type === 'find') {
-        const query = prompt('Найти:');
-        if (!query) return;
-        for (let ri = 0; ri < tableData.value.length; ri++) {
-            for (const col of columnDefs.value) {
-                if (String(tableData.value[ri][col.field] || '').toLowerCase().includes(query.toLowerCase())) {
-                    tableApi.value?.ensureIndexVisible(ri);
-                    tableApi.value?.setFocusedCell(ri, col.field);
-                    return;
-                }
-            }
-        }
-        alert('Не найдено');
         return;
     }
 
@@ -898,7 +1007,7 @@ const handleRangeClear = ({ targetRows, colFields }) => {
     syncChangesToServer(targetRows);
 };
 
-const handleMenuAction = async (action) => {
+const handleMenuAction = async (action, value) => {
     // Read-only режим: разрешаем только copy.
     if (!props.canEdit && action !== 'copy') return;
     const params = cellContextMenu.value.params;
@@ -907,7 +1016,13 @@ const handleMenuAction = async (action) => {
     const row = params.node?.data;
     if (!row || !field) return;
 
-    // Если есть выделение, применяем действие к нему
+    // === Границы — делегируем в Ribbon (применит к выделению или одной ячейке) ===
+    if (action === 'border') {
+        handleRibbonAction({ type: 'border', value });
+        return;
+    }
+
+    // Действия, применяющиеся ко всему диапазону — делегируем в Ribbon
     if (currentSelection.value && (action === 'clear' || action === 'bold' || action === 'italic')) {
         if (action === 'clear') {
             handleRangeClear({
@@ -922,10 +1037,12 @@ const handleMenuAction = async (action) => {
             });
             return;
         }
-        // Для стилей вызываем handleRibbonAction с правильной сигнатурой
         handleRibbonAction({ type: action });
         return;
     }
+
+    // === Действия, использующие Ribbon (для согласованности с тулбаром) ===
+    if (action === 'insert') { handleRibbonAction({ type: 'insertRow' }); return; }
 
     // Одиночное действие (если нет диапазона)
     saveUndoState([{
@@ -955,26 +1072,47 @@ const handleMenuAction = async (action) => {
                 }
                 syncChangesToServer([row]);
                 break;
-            case 'bold': 
-                if (!row[field + '_style']) row[field + '_style'] = {};
-                row[field + '_style'].fontWeight = row[field + '_style'].fontWeight === 'bold' ? 'normal' : 'bold'; 
+            case 'paste-special':
+                // «Специальная вставка» — только значения, без стилей
+                if (internalClipboard.value) {
+                    row[field] = internalClipboard.value.value;
+                } else {
+                    row[field] = await navigator.clipboard.readText();
+                }
                 syncChangesToServer([row]);
                 break;
-            case 'italic': 
+            case 'bold':
                 if (!row[field + '_style']) row[field + '_style'] = {};
-                row[field + '_style'].fontStyle = row[field + '_style'].fontStyle === 'italic' ? 'normal' : 'italic'; 
+                row[field + '_style'].fontWeight = row[field + '_style'].fontWeight === 'bold' ? 'normal' : 'bold';
                 syncChangesToServer([row]);
                 break;
-            case 'clear': 
-                row[field] = ''; 
+            case 'italic':
+                if (!row[field + '_style']) row[field + '_style'] = {};
+                row[field + '_style'].fontStyle = row[field + '_style'].fontStyle === 'italic' ? 'normal' : 'italic';
+                syncChangesToServer([row]);
+                break;
+            case 'clear':
+                row[field] = '';
                 syncChangesToServer([row]);
                 break;
             case 'delete':
                 if (confirm('Удалить содержимое ячейки?')) {
                     row[field] = '';
+                    row[field + '_style'] = null;
                     syncChangesToServer([row]);
                 }
                 break;
+            case 'hyperlink': {
+                const url = prompt('Введите URL гиперссылки:', String(row[field] ?? 'https://'));
+                if (url) {
+                    row[field] = url;
+                    if (!row[field + '_style']) row[field + '_style'] = {};
+                    row[field + '_style'].color = '#2563eb';
+                    row[field + '_style'].textDecoration = 'underline';
+                    syncChangesToServer([row]);
+                }
+                break;
+            }
         }
         activeCellInfo.value.style = { ...(row[field + '_style'] || {}) };
     } catch (err) { console.error(err); }
@@ -1293,29 +1431,25 @@ const skipBulkPermissions = () => {
 };
 
 const exportXlsx = async () => {
-    const sheetsForExport = (props.sheets || []).map(s => {
-        const isActive = s.id === props.activeSheet?.id;
-        const colsBase = (s.columns && s.columns.length) ? s.columns : columnDefs.value;
-        const data = isActive ? tableData.value : [];
-        let m;
-        if (isActive) m = sheetMeta.value;
-        else {
-            try { m = JSON.parse(localStorage.getItem(`excel_sheet_meta_${s.id}`) || '{}'); }
-            catch (_) { m = {}; }
-        }
-        return {
-            name: s.name,
-            hidden: !!m.hidden,
-            columnDefs: colsBase,
-            rowData: data,
-            merges: m.merges || [],
-            validations: m.validations || {},
-            colWidths: m.colWidths || {},
-            rowHeights: m.rowHeights || {}
-        };
-    });
+    if (!props.activeSheet) {
+        alert('Откройте лист, который хотите скачать.');
+        return;
+    }
+    // Экспортируем активный лист (его данные хранятся клиентом).
+    // Другие листы пользователя не выгружаем — их rowData нет в памяти браузера.
+    const sheetsForExport = [{
+        name: props.activeSheet.name,
+        hidden: !!sheetMeta.value.hidden,
+        columnDefs: columnDefs.value,
+        rowData: tableData.value,
+        merges: sheetMeta.value.merges || [],
+        validations: sheetMeta.value.validations || {},
+        colWidths: sheetMeta.value.colWidths || {},
+        rowHeights: sheetMeta.value.rowHeights || {}
+    }];
+    const filename = (props.activeSheet.name || 'export').replace(/[/\\?%*:|"<>]/g, '_') + '.xlsx';
     try {
-        await writeXlsxFile('export.xlsx', sheetsForExport);
+        await writeXlsxFile(filename, sheetsForExport);
     } catch (err) {
         console.error(err);
         alert('Не удалось сохранить файл: ' + (err?.message || err));
@@ -1375,10 +1509,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <Head title="Excel Online" />
+    <Head title="Таблицы" />
     <input type="file" ref="fileInput" accept=".xlsx,.xls" class="hidden" @change="handleFileChosen" />
     <div class="h-screen w-screen flex flex-col overflow-hidden bg-[#f3f2f1] text-[#323130] font-sans">
-        <div class="bg-[#217346] text-white px-4 py-1 flex items-center justify-between text-xs h-9 shrink-0">
+        <div class="bg-[#2563eb] text-white px-4 py-1 flex items-center justify-between text-xs h-9 shrink-0">
             <div class="flex items-center gap-4">
                 <div class="flex items-center gap-1 font-bold">
                     <svg class="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M16.2,2H7.8C6.8,2,6,2.8,6,3.8v16.4C6,21.2,6.8,22,7.8,22h8.4c1,0,1.8-0.8,1.8-1.8V3.8C18,2.8,17.2,2,16.2,2z M12,19 c-0.6,0-1-0.4-1-1s0.4-1,1-1s1,0.4,1,1S12.6,19,12,19z M15,16H9v-2h6V16z M15,12H9v-2h6V12z M15,8H9V6h6V8z"/></svg>
@@ -1394,8 +1528,21 @@ onUnmounted(() => {
                 <span v-if="isAdmin && activeSheet?.owner" class="bg-white/10 text-xs px-2 py-1 rounded">
                     Импортировал: <b>{{ activeSheet.owner.name }}</b>
                 </span>
-                <button @click="triggerImport" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm" title="Импортировать .xlsx">
-                    📂 Импорт
+                <button @click="triggerImport" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5" title="Загрузить .xlsx с компьютера">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5"/>
+                        <path d="M16.5 12L12 7.5 7.5 12"/>
+                        <path d="M12 7.5V18"/>
+                    </svg>
+                    Импорт
+                </button>
+                <button v-if="activeSheet" @click="handleRibbonAction({ type: 'export' })" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5" title="Скачать как .xlsx">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5"/>
+                        <path d="M7.5 12l4.5 4.5 4.5-4.5"/>
+                        <path d="M12 3v13.5"/>
+                    </svg>
+                    Скачать
                 </button>
                 <Link v-if="isAdmin" :href="route('users.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Пользователи</Link>
                 <button v-if="isAdmin" @click="openPermissionsModal" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors">Права доступа</button>
@@ -1443,7 +1590,7 @@ onUnmounted(() => {
                 <div class="border-r border-gray-300 px-4 py-0.5 min-w-[80px] text-sm">{{ currentCellData.position }}</div>
                 <div class="flex items-center px-2 gap-2 border-r border-gray-300 h-full">
                     <button class="text-gray-400 hover:text-red-600 text-xs">✕</button><button class="text-gray-400 hover:text-green-600 text-xs">✓</button>
-                    <div class="text-[#217346] font-serif italic font-bold px-1 cursor-pointer">fx</div>
+                    <div class="text-[#2563eb] font-serif italic font-bold px-1 cursor-pointer">fx</div>
                 </div>
                 <input v-model="currentCellData.value" type="text" :readonly="!canEdit"
                        :class="['flex-1 border-none focus:ring-0 py-0.5 text-sm px-2', !canEdit && 'bg-gray-50 text-gray-500']" />
@@ -1458,8 +1605,13 @@ onUnmounted(() => {
                         Импортируйте .xlsx — вы станете владельцем и сможете его редактировать.<br>
                         <span class="text-xs text-gray-400">Чтобы получить доступ к чужим листам — обратитесь к администратору.</span>
                     </div>
-                    <button @click="triggerImport" class="px-4 py-2 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">
-                        📂 Импортировать .xlsx
+                    <button @click="triggerImport" class="px-4 py-2 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8] flex items-center gap-2">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5"/>
+                            <path d="M16.5 12L12 7.5 7.5 12"/>
+                            <path d="M12 7.5V18"/>
+                        </svg>
+                        Импортировать .xlsx
                     </button>
                 </div>
                 <div v-if="activeSheet" class="w-full h-full" :style="{ zoom: zoom / 100 }">
@@ -1475,6 +1627,7 @@ onUnmounted(() => {
                         @column-resized="handleColumnResized" @row-resized="handleRowResized" />
                 </div>
                 <ExcelContextMenu v-if="cellContextMenu.show" :x="cellContextMenu.x" :y="cellContextMenu.y" :cellData="cellContextMenu.params"
+                    :canEdit="canEdit" :hasClipboard="!!internalClipboard"
                     @close="cellContextMenu.show = false" @action="handleMenuAction" />
             </div>
 
@@ -1484,7 +1637,7 @@ onUnmounted(() => {
                         <div v-for="(sheet, index) in visibleSheets" :key="sheet.id" class="h-full flex items-center">
                             <div class="h-full flex items-center relative transition-colors" :class="[sheet.id === activeSheet?.id ? 'bg-white' : 'bg-transparent hover:bg-gray-200', isSheetHidden(sheet.id) ? 'opacity-50' : '']" @contextmenu.prevent="openTabContextMenu($event, sheet)">
                                 <input v-if="editingSheetId === sheet.id" v-model="newSheetName" @blur="saveSheetName(sheet)" @keyup.enter="saveSheetName(sheet)" class="border-none focus:ring-0 outline-none px-4 py-0 w-24 text-[11px] font-bold bg-white h-full" v-focus />
-                                <button v-else @click="router.visit(route('dashboard', { sheet_id: sheet.id }))" @dblclick="isAdmin && startEditing(sheet)" class="px-5 h-full text-[11px] whitespace-nowrap" :class="sheet.id === activeSheet?.id ? 'text-[#217346] font-bold shadow-[0_-2px_0_0_#217346_inset]' : 'text-gray-700'">
+                                <button v-else @click="router.visit(route('dashboard', { sheet_id: sheet.id }))" @dblclick="isAdmin && startEditing(sheet)" class="px-5 h-full text-[11px] whitespace-nowrap" :class="sheet.id === activeSheet?.id ? 'text-[#2563eb] font-bold shadow-[0_-2px_0_0_#2563eb_inset]' : 'text-gray-700'">
                                     {{ sheet.name }}<span v-if="isSheetHidden(sheet.id)" class="ml-1 text-[9px] text-gray-500">(скрыт)</span>
                                 </button>
                             </div>
@@ -1529,11 +1682,11 @@ onUnmounted(() => {
                 <div class="space-y-2">
                     <div class="flex items-center gap-2">
                         <label class="text-xs w-16 text-gray-600">Найти:</label>
-                        <input v-model="findText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#217346]" @keyup.enter="findNext()" />
+                        <input v-model="findText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#2563eb]" @keyup.enter="findNext()" />
                     </div>
                     <div class="flex items-center gap-2">
                         <label class="text-xs w-16 text-gray-600">Заменить:</label>
-                        <input v-model="replaceText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#217346]" />
+                        <input v-model="replaceText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#2563eb]" />
                     </div>
                     <label class="flex items-center gap-2 text-xs text-gray-700">
                         <input type="checkbox" v-model="findCaseSensitive" /> Учитывать регистр
@@ -1543,7 +1696,7 @@ onUnmounted(() => {
                 <div class="flex gap-2 mt-3 justify-end">
                     <button @click="findNext()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Найти далее</button>
                     <button @click="replaceCurrent()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Заменить</button>
-                    <button @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">Заменить все</button>
+                    <button @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">Заменить все</button>
                     <button @click="showFindReplace = false" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Закрыть</button>
                 </div>
             </div>
@@ -1557,7 +1710,7 @@ onUnmounted(() => {
                     <button v-for="p in [200, 100, 75, 50, 25]" :key="p"
                             @click="setZoom(p); showZoomDialog = false"
                             class="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100"
-                            :class="{ 'bg-[#217346] text-white border-[#217346]': zoom === p }">{{ p }}%</button>
+                            :class="{ 'bg-[#2563eb] text-white border-[#2563eb]': zoom === p }">{{ p }}%</button>
                 </div>
                 <div class="flex items-center gap-2 mb-3">
                     <span class="text-sm">Произвольный:</span>
@@ -1568,7 +1721,39 @@ onUnmounted(() => {
                 </div>
                 <div class="flex justify-end gap-2">
                     <button @click="showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300">Отмена</button>
-                    <button @click="setZoom(zoomDialogValue); showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">ОК</button>
+                    <button @click="setZoom(zoomDialogValue); showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">ОК</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Диалог "Сортировка" -->
+        <div v-if="sortDialog.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30" @click.self="sortDialog.show = false">
+            <div class="bg-white rounded-lg shadow-xl w-[360px] p-4">
+                <h3 class="font-bold text-sm mb-3">Сортировка</h3>
+                <div class="space-y-3 text-sm">
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">Сортировать по столбцу</label>
+                        <select v-model="sortDialog.column" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                            <option v-for="c in columnDefs" :key="c.field" :value="c.field">{{ c.headerName || c.field }}</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">Порядок</label>
+                        <div class="flex gap-3">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" v-model="sortDialog.order" value="asc" /> По возрастанию (А→Я / 0→9)
+                            </label>
+                        </div>
+                        <div class="flex gap-3 mt-1">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" v-model="sortDialog.order" value="desc" /> По убыванию (Я→А / 9→0)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-4 flex justify-end gap-2">
+                    <button @click="sortDialog.show = false" class="px-3 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300">Отмена</button>
+                    <button @click="applySortFromDialog" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">Сортировать</button>
                 </div>
             </div>
         </div>
@@ -1629,7 +1814,7 @@ onUnmounted(() => {
                     <button @click="skipBulkPermissions" :disabled="bulkPermissions.saving"
                             class="px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300">Пропустить</button>
                     <button @click="submitBulkPermissions" :disabled="bulkPermissions.saving"
-                            class="px-4 py-1.5 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39] disabled:opacity-50">
+                            class="px-4 py-1.5 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8] disabled:opacity-50">
                         {{ bulkPermissions.saving ? 'Сохранение…' : 'Назначить и открыть' }}
                     </button>
                 </div>

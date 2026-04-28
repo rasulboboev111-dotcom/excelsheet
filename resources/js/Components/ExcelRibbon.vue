@@ -149,8 +149,6 @@ const icons = {
     clear: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 6h10l-1 8H4L3 6z" fill="#fde7e9" stroke="#a4262c"/><path d="M2 4h12M6 4v2M10 4v2" stroke="#a4262c" stroke-width="1.2"/></svg>`,
     sort: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4L2 6M4 4L6 6M4 4V12M10 4H14M10 8H13M10 12H12" stroke="#333" stroke-width="1.5"/></svg>`,
     find: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4" stroke="#333" stroke-width="1.5"/><path d="M10 10L13 13" stroke="#333" stroke-width="2"/></svg>`,
-    cond: `<svg width="28" height="28" viewBox="0 0 32 32"><rect x="4" y="4" width="24" height="24" fill="#fff" stroke="#ccc"/><rect x="6" y="6" width="8" height="8" fill="#ff4d4d"/><rect x="18" y="18" width="8" height="8" fill="#2ecc71"/></svg>`,
-    tableStyle: `<svg width="28" height="28" viewBox="0 0 32 32"><rect x="4" y="4" width="24" height="24" fill="#fff" stroke="#217346" stroke-width="2"/><path d="M4 12H28M4 20H28M12 4V28M20 4V28" stroke="#217346" stroke-width="1.5"/></svg>`,
     cellStyle: `<svg width="28" height="28" viewBox="0 0 32 32"><rect x="4" y="4" width="24" height="24" fill="#f3f2f1" stroke="#333"/><rect x="10" y="10" width="12" height="12" fill="#fff" stroke="#0078d4"/></svg>`,
     insertRow: `<svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="#dff6dd"/><path d="M12 7v10M7 12h10" stroke="#107c10" stroke-width="2" stroke-linecap="round"/></svg>`,
     deleteRow: `<svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="#fde7e9"/><path d="M8 8l8 8M16 8l-8 8" stroke="#a4262c" stroke-width="2" stroke-linecap="round"/></svg>`,
@@ -159,7 +157,7 @@ const icons = {
     currency: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 4V12M5 6H10C11 6 12 7 12 8C12 9 11 10 10 10H5M8 10L12 14" stroke="#333" stroke-width="1.5"/></svg>`,
     percent: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="5" cy="5" r="2" stroke="#333"/><circle cx="11" cy="11" r="2" stroke="#333"/><path d="M12 4L4 12" stroke="#333" stroke-width="1.5"/></svg>`,
     comma: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="0" y="12" font-size="10" font-weight="bold" fill="#333">,000</text></svg>`,
-    decInc: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="1" y="12" font-size="9" fill="#333">.0</text><path d="M12 4L14 2L16 4" stroke="#217346" stroke-width="1.5"/></svg>`,
+    decInc: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="1" y="12" font-size="9" fill="#333">.0</text><path d="M12 4L14 2L16 4" stroke="#2563eb" stroke-width="1.5"/></svg>`,
     decDec: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><text x="1" y="12" font-size="9" fill="#333">.0</text><path d="M12 10L14 12L16 10" stroke="#a4262c" stroke-width="1.5"/></svg>`,
     vTop: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 3H14M2 7H10M2 11H14" stroke="#333" stroke-width="1.5"/></svg>`,
     vMiddle: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 5H14M2 9H10M2 13H14" stroke="#333" stroke-width="1.5"/></svg>`,
@@ -175,26 +173,19 @@ const icons = {
 <template>
     <div class="excel-ribbon">
         <div class="ribbon-tabs">
-            <div class="tab file-tab" @click="handleAction('import')" title="Открыть .xlsx">Файл</div>
             <div class="tab active">Главная</div>
-            <div class="tab">Вставка</div>
-            <div class="tab">Разметка страницы</div>
-            <div class="tab">Формулы</div>
-            <div class="tab">Данные</div>
-            <div class="tab">Рецензирование</div>
-            <div class="tab">Вид</div>
-            <div class="tab">Справка</div>
         </div>
 
         <div class="ribbon-content">
             <!-- Группа: Файл (Импорт/Экспорт) -->
             <div class="ribbon-group">
                 <div class="group-inner" style="flex-direction: column; gap: 2px;">
-                    <button class="btn-mini" @click="handleAction('import')" title="Открыть .xlsx">
-                        <span style="font-size:14px;">📂</span> Открыть
-                    </button>
                     <button class="btn-mini" @click="handleAction('export')" title="Сохранить как .xlsx">
-                        <span style="font-size:14px;">💾</span> Скачать .xlsx
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:2px">
+                            <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5"/>
+                            <path d="M7.5 12l4.5 4.5 4.5-4.5"/>
+                            <path d="M12 3v13.5"/>
+                        </svg> Скачать .xlsx
                     </button>
                     <button class="btn-mini" @click="handleAction('mergeCells')" title="Объединить выделенные ячейки">
                         <span style="font-size:14px;">⬌</span> Объединить
@@ -396,14 +387,6 @@ const icons = {
             <!-- Группа: Стили -->
             <div class="ribbon-group">
                 <div class="group-inner styles-group">
-                    <button class="btn-style" @click="handleAction('conditional')">
-                        <div v-html="icons.cond"></div>
-                        <span>Условное форматирование</span>
-                    </button>
-                    <button class="btn-style" @click="handleAction('formatTable')">
-                        <div v-html="icons.tableStyle"></div>
-                        <span>Форматировать как таблицу</span>
-                    </button>
                     <div class="color-picker-container cell-styles-container">
                         <button class="btn-style drop-btn-down" @click.stop="togglePicker('cellStyles', $event)">
                             <div v-html="icons.cellStyle"></div>
@@ -457,10 +440,17 @@ const icons = {
                         <div class="icon-m" v-html="icons.deleteRow"></div>
                         <span>Удалить</span>
                     </button>
-                    <button class="btn-medium" @click="handleAction('format')">
+                    <button class="btn-medium" @click.stop="togglePicker('formatCells', $event)">
                         <div class="icon-m" v-html="icons.format"></div>
                         <span>Формат</span>
                     </button>
+                    <div class="color-dropdown" v-if="activePicker === 'formatCells'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px', minWidth: '220px' }" @click.stop>
+                        <div class="palette-title">Размеры</div>
+                        <div class="cells-format-list">
+                            <button class="cells-format-item" @click="handleAction('format-rowHeight'); activePicker = null">📏 Высота строки…</button>
+                            <button class="cells-format-item" @click="handleAction('format-colWidth'); activePicker = null">📐 Ширина столбца…</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="group-label">Ячейки</div>
             </div>
@@ -469,15 +459,39 @@ const icons = {
             <div class="ribbon-group">
                 <div class="group-inner editing-group">
                     <div class="btn-stack">
-                        <button class="btn-mini" @click="handleAction('autosum')">
-                            <span v-html="icons.sum"></span> Автосумма
+                        <button class="btn-mini" @click.stop="togglePicker('autosum', $event)">
+                            <span v-html="icons.sum"></span> Автосумма ▾
                         </button>
-                        <button class="btn-mini" @click="handleAction('fill')">
-                            <span v-html="icons.fill"></span> Заполнить
+                        <div class="color-dropdown" v-if="activePicker === 'autosum'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px', minWidth: '180px' }" @click.stop>
+                            <div class="cells-format-list">
+                                <button class="cells-format-item" @click="handleAction('autosum-sum'); activePicker = null">Σ Сумма</button>
+                                <button class="cells-format-item" @click="handleAction('autosum-avg'); activePicker = null">x̄ Среднее</button>
+                                <button class="cells-format-item" @click="handleAction('autosum-count'); activePicker = null">№ Количество</button>
+                                <button class="cells-format-item" @click="handleAction('autosum-min'); activePicker = null">↓ Минимум</button>
+                                <button class="cells-format-item" @click="handleAction('autosum-max'); activePicker = null">↑ Максимум</button>
+                            </div>
+                        </div>
+                        <button class="btn-mini" @click.stop="togglePicker('fill', $event)">
+                            <span v-html="icons.fill"></span> Заполнить ▾
                         </button>
-                        <button class="btn-mini" @click="handleAction('clear')">
-                            <span v-html="icons.clear"></span> Очистить
+                        <div class="color-dropdown" v-if="activePicker === 'fill'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px', minWidth: '180px' }" @click.stop>
+                            <div class="cells-format-list">
+                                <button class="cells-format-item" @click="handleAction('fill-down'); activePicker = null">↓ Вниз</button>
+                                <button class="cells-format-item" @click="handleAction('fill-right'); activePicker = null">→ Вправо</button>
+                                <button class="cells-format-item" @click="handleAction('fill-up'); activePicker = null">↑ Вверх</button>
+                                <button class="cells-format-item" @click="handleAction('fill-left'); activePicker = null">← Влево</button>
+                            </div>
+                        </div>
+                        <button class="btn-mini" @click.stop="togglePicker('clear', $event)">
+                            <span v-html="icons.clear"></span> Очистить ▾
                         </button>
+                        <div class="color-dropdown" v-if="activePicker === 'clear'" :style="{ top: dropdownPos.top + 'px', left: dropdownPos.left + 'px', minWidth: '180px' }" @click.stop>
+                            <div class="cells-format-list">
+                                <button class="cells-format-item" @click="handleAction('clear-all'); activePicker = null">Всё (значения и форматы)</button>
+                                <button class="cells-format-item" @click="handleAction('clear-formats'); activePicker = null">Только форматы</button>
+                                <button class="cells-format-item" @click="handleAction('clear-contents'); activePicker = null">Только содержимое</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="btn-stack">
                         <button class="btn-mini" @click="handleAction('sort')">
@@ -521,8 +535,8 @@ const icons = {
 }
 .tab:hover { background: #f3f2f1; }
 .tab.active { 
-    color: #217346; 
-    border-bottom: 3px solid #217346; 
+    color: #2563eb; 
+    border-bottom: 3px solid #2563eb; 
     font-weight: 600; 
     background: #f3f2f1;
 }
@@ -760,6 +774,26 @@ const icons = {
     padding: 8px;
     z-index: 10000;
     width: 190px;
+}
+.cells-format-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-bottom: 6px;
+}
+.cells-format-item {
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #323130;
+    cursor: pointer;
+}
+.cells-format-item:hover {
+    background: #f3f2f1;
+    border-color: #e1e1e1;
 }
 .palette-title {
     font-size: 11px;

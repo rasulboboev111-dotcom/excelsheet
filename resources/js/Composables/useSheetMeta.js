@@ -21,6 +21,8 @@ export function useSheetMeta(sheetIdRef) {
             const raw = localStorage.getItem(KEY(id));
             if (raw) {
                 const parsed = JSON.parse(raw);
+                // Чистим устаревшие поля от удалённых фич, чтобы не таскать мусор в localStorage.
+                if (parsed && typeof parsed === 'object') delete parsed.conditionalRules;
                 meta.value = { ...empty(), ...parsed };
             } else {
                 meta.value = empty();

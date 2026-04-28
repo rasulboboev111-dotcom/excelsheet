@@ -1,19 +1,50 @@
 <script setup>
-import { onMounted, onUnmounted } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
 
 const props = defineProps({
     x: Number,
     y: Number,
     cellData: Object,
+    canEdit: { type: Boolean, default: true },
+    hasClipboard: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close', 'action']);
 
 const closeMenu = () => emit('close');
+const borderPickerOpen = ref(false);
+
+// Те же пресеты, что в Ribbon — порядок и type синхронизированы
+const borderOptions = [
+    { type: 'all',     label: 'Все границы' },
+    { type: 'outside', label: 'Внешние' },
+    { type: 'thickBox',label: 'Толстые внешние' },
+    { type: 'top',     label: 'Верхняя' },
+    { type: 'bottom',  label: 'Нижняя' },
+    { type: 'left',    label: 'Левая' },
+    { type: 'right',   label: 'Правая' },
+    { type: 'none',    label: 'Без границ' },
+];
+
+const borderIcon = (type) => {
+    const f = '#fff', g = '#bbb', b = '#222';
+    const box = `<rect x="3" y="3" width="14" height="14" fill="${f}" stroke="${g}" stroke-width="1"/>`;
+    const lines = {
+        bottom:   `<line x1="3" y1="17" x2="17" y2="17" stroke="${b}" stroke-width="2"/>`,
+        top:      `<line x1="3" y1="3"  x2="17" y2="3"  stroke="${b}" stroke-width="2"/>`,
+        left:     `<line x1="3" y1="3"  x2="3"  y2="17" stroke="${b}" stroke-width="2"/>`,
+        right:    `<line x1="17" y1="3" x2="17" y2="17" stroke="${b}" stroke-width="2"/>`,
+        none:     ``,
+        all:      `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="1.2"/><line x1="3" y1="10" x2="17" y2="10" stroke="${b}" stroke-width="0.8"/><line x1="10" y1="3" x2="10" y2="17" stroke="${b}" stroke-width="0.8"/>`,
+        outside:  `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="1.5"/>`,
+        thickBox: `<rect x="3" y="3" width="14" height="14" fill="none" stroke="${b}" stroke-width="2.5"/>`,
+    };
+    return `<svg width="20" height="20" viewBox="0 0 20 20">${box}${lines[type] || ''}</svg>`;
+};
 
 onMounted(() => {
     window.addEventListener('click', closeMenu);
-    window.addEventListener('contextmenu', closeMenu); // Закрываем при повторном клике правой кнопкой
+    window.addEventListener('contextmenu', closeMenu);
 });
 
 onUnmounted(() => {
@@ -21,70 +52,93 @@ onUnmounted(() => {
     window.removeEventListener('contextmenu', closeMenu);
 });
 
-const handleAction = (action) => {
-    emit('action', action);
+const handleAction = (action, value) => {
+    emit('action', action, value);
     closeMenu();
+};
+
+const toggleBorderPicker = (e) => {
+    e.stopPropagation();
+    borderPickerOpen.value = !borderPickerOpen.value;
+};
+
+const pickBorder = (type) => {
+    handleAction('border', type);
 };
 </script>
 
 <template>
     <!-- Добавляем .prevent на contextmenu, чтобы браузерное меню не вылезало внутри нашего -->
     <div class="excel-context-menu" :style="{ top: y + 'px', left: x + 'px' }" @click.stop @contextmenu.prevent>
-        <!-- Top Formatting Bar -->
-        <div class="formatting-bar">
-            <button class="btn-cut" title="Вырезать" @click="handleAction('cut')">
+        <!-- Top Formatting Bar (Cut/B/I/Color/Fill — только если можно редактировать) -->
+        <div class="formatting-bar" v-if="canEdit || hasClipboard">
+            <button v-if="canEdit" class="btn-cut" title="Вырезать" @click="handleAction('cut')">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#742774" d="M19,3L13,9L15,11L21,5V3M12,12.5A0.5,0.5 0 0,1 11.5,12A0.5,0.5 0 0,1 12,11.5A0.5,0.5 0 0,1 12.5,12A0.5,0.5 0 0,1 12,12.5M6,3L11,8L9,10L3,4V3M3,20V19L9,13L11,15L5,21H3M19,21H21V20L15,14L13,16L19,22V21Z"/></svg>
             </button>
             <button class="btn-copy" title="Копировать" @click="handleAction('copy')">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#D83B01" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"/></svg>
             </button>
-            <button class="btn-paste" title="Вставить" @click="handleAction('paste')">
+            <button v-if="canEdit && hasClipboard" class="btn-paste" title="Вставить" @click="handleAction('paste')">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#0078D4" d="M19,20H5V4H7V7H17V4H19M12,2A1,1 0 0,1 13,3A1,1 0 0,1 12,4A1,1 0 0,1 11,3A1,1 0 0,1 12,2M19,2H14.82C14.4,0.84 13.3,0 12,0C10.7,0 9.6,0.84 9.18,2H5A2,2 0 0,0 3,4V20A2,2 0 0,0 5,22H19A2,2 0 0,0 21,20V4A2,2 0 0,0 19,2Z"/></svg>
             </button>
-            <div class="divider-v"></div>
-            <button class="btn-bold" style="font-weight: bold;" @click="handleAction('bold')">B</button>
-            <button class="btn-italic" style="font-style: italic;" @click="handleAction('italic')">I</button>
-            <button class="btn-color" @click="handleAction('color')">A<div class="color-underline red"></div></button>
-            <button class="btn-fill" @click="handleAction('fill')">
-                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#0078D4" d="M19.22,10.63L13.37,4.78C12.91,4.32 12.14,4.32 11.68,4.78L10.37,6.09L11.53,7.25L13.1,5.69L18.41,11H15.08L14.08,12H18.25L19.25,11L19.22,10.63M10.25,12H6.08L5.08,13L6.08,14H9.25L10.25,13M10,18H14V16H10V18M11,2H13V0H11V2M3,18V20H21V18H3Z"/></svg>
-                <div class="color-underline yellow"></div>
-            </button>
+            <template v-if="canEdit">
+                <div class="divider-v"></div>
+                <button class="btn-bold" style="font-weight: bold;" @click="handleAction('bold')">B</button>
+                <button class="btn-italic" style="font-style: italic;" @click="handleAction('italic')">I</button>
+                <button class="btn-border" title="Границы" @click="toggleBorderPicker">
+                    <svg width="16" height="16" viewBox="0 0 20 20">
+                        <rect x="3" y="3" width="14" height="14" fill="none" stroke="#222" stroke-width="1.2"/>
+                        <line x1="3" y1="10" x2="17" y2="10" stroke="#222" stroke-width="0.8"/>
+                        <line x1="10" y1="3" x2="10" y2="17" stroke="#222" stroke-width="0.8"/>
+                    </svg>
+                    <span class="caret">▾</span>
+                </button>
+            </template>
+        </div>
+
+        <!-- Поповер выбора границы -->
+        <div v-if="borderPickerOpen && canEdit" class="border-popover" @click.stop>
+            <div class="popover-title">Границы</div>
+            <div class="border-grid">
+                <button v-for="opt in borderOptions" :key="opt.type" class="border-cell"
+                        :title="opt.label" @click="pickBorder(opt.type)">
+                    <span v-html="borderIcon(opt.type)"></span>
+                    <span class="border-cell-label">{{ opt.label }}</span>
+                </button>
+            </div>
         </div>
 
         <div class="menu-list">
-            <div class="menu-item" @click="handleAction('cut')">
-                <span class="icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="#742774" d="M19,3L13,9L15,11L21,5V3M12,12.5A0.5,0.5 0 0,1 11.5,12A0.5,0.5 0 0,1 12,11.5A0.5,0.5 0 0,1 12.5,12A0.5,0.5 0 0,1 12,12.5M6,3L11,8L9,10L3,4V3M3,20V19L9,13L11,15L5,21H3M19,21H21V20L15,14L13,16L19,22V21Z"/></svg></span> 
+            <div v-if="canEdit" class="menu-item" @click="handleAction('cut')">
+                <span class="icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="#742774" d="M19,3L13,9L15,11L21,5V3M12,12.5A0.5,0.5 0 0,1 11.5,12A0.5,0.5 0 0,1 12,11.5A0.5,0.5 0 0,1 12.5,12A0.5,0.5 0 0,1 12,12.5M6,3L11,8L9,10L3,4V3M3,20V19L9,13L11,15L5,21H3M19,21H21V20L15,14L13,16L19,22V21Z"/></svg></span>
                 Вырезать <span class="shortcut">Ctrl+X</span>
             </div>
             <div class="menu-item" @click="handleAction('copy')">
-                <span class="icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="#D83B01" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"/></svg></span> 
+                <span class="icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="#D83B01" d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"/></svg></span>
                 Копировать <span class="shortcut">Ctrl+C</span>
             </div>
-            <div class="menu-item disabled">
-                Параметры вставки:
+            <div v-if="canEdit && hasClipboard" class="menu-item" @click="handleAction('paste')">
+                <span class="icon"></span> Вставить <span class="shortcut">Ctrl+V</span>
             </div>
-            <div class="menu-item" @click="handleAction('paste-special')">
+            <div v-if="canEdit && hasClipboard" class="menu-item" @click="handleAction('paste-special')">
                 <span class="icon"></span> Специальная вставка...
             </div>
-            
-            <div class="divider"></div>
-            
-            <div class="menu-item" @click="handleAction('insert')">
-                <span class="icon blue">➕</span> Вставить...
+
+            <div v-if="canEdit" class="divider"></div>
+
+            <div v-if="canEdit" class="menu-item" @click="handleAction('insert')">
+                <span class="icon blue">➕</span> Вставить строку
             </div>
-            <div class="menu-item" @click="handleAction('delete')">
+            <div v-if="canEdit" class="menu-item" @click="handleAction('delete')">
                 <span class="icon red">❌</span> Удалить...
             </div>
-            <div class="menu-item" @click="handleAction('clear')">
+            <div v-if="canEdit" class="menu-item" @click="handleAction('clear')">
                 <span class="icon orange">🧹</span> Очистить содержимое
             </div>
-            
-            <div class="divider"></div>
-            
-            <div class="menu-item" @click="handleAction('format')">
-                <span class="icon gray">📏</span> Формат ячеек...
-            </div>
-            <div class="menu-item" @click="handleAction('hyperlink')">
+
+            <div v-if="canEdit" class="divider"></div>
+
+            <div v-if="canEdit" class="menu-item" @click="handleAction('hyperlink')">
                 <span class="icon blue">🔗</span> Гиперссылка...
             </div>
         </div>
@@ -132,14 +186,62 @@ const handleAction = (action) => {
     background: #f3f2f1;
 }
 
-.color-underline {
-    position: absolute;
-    bottom: 4px;
-    width: 14px;
-    height: 3px;
+.btn-border {
+    flex-direction: row !important;
+    gap: 2px;
+    padding: 6px 6px 6px 8px !important;
 }
-.color-underline.red { background: #d83b01; }
-.color-underline.yellow { background: #ffeb3b; }
+.btn-border .caret {
+    font-size: 9px;
+    color: #605e5c;
+    line-height: 1;
+}
+
+.border-popover {
+    position: absolute;
+    top: 42px;
+    left: 8px;
+    background: #fff;
+    border: 1px solid #c8c8c8;
+    border-radius: 4px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.15);
+    padding: 8px;
+    z-index: 10001;
+    min-width: 220px;
+}
+.popover-title {
+    font-size: 11px;
+    color: #605e5c;
+    font-weight: 600;
+    margin-bottom: 6px;
+    padding-left: 4px;
+}
+.border-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+}
+.border-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    text-align: left;
+    color: #323130;
+}
+.border-cell:hover {
+    background: #f3f2f1;
+    border-color: #e1e1e1;
+}
+.border-cell-label {
+    flex: 1;
+    white-space: nowrap;
+}
 
 .divider-v {
     width: 1px;

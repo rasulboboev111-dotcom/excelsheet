@@ -19,32 +19,26 @@ const submit = () => {
 
 <template>
     <GuestLayout>
-        <Head title="Confirm Password" />
+        <Head title="Подтверждение пароля" />
 
-        <div class="mb-4 text-sm text-gray-600">
-            This is a secure area of the application. Please confirm your password before continuing.
-        </div>
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Подтверждение</h2>
+        <p class="text-sm text-gray-500 mb-5">
+            Это защищённая область. Подтвердите пароль, чтобы продолжить.
+        </p>
 
-        <form @submit.prevent="submit">
+        <form @submit.prevent="submit" class="space-y-4">
             <div>
-                <InputLabel for="password" value="Password" />
-                <TextInput
-                    id="password"
-                    type="password"
-                    class="mt-1 block w-full"
-                    v-model="form.password"
-                    required
-                    autocomplete="current-password"
-                    autofocus
-                />
-                <InputError class="mt-2" :message="form.errors.password" />
+                <InputLabel for="password" value="Пароль" />
+                <TextInput id="password" type="password" class="mt-1 block w-full" v-model="form.password" required autocomplete="current-password" autofocus placeholder="••••••••" />
+                <InputError class="mt-1.5" :message="form.errors.password" />
             </div>
 
-            <div class="flex justify-end mt-4">
-                <PrimaryButton class="ml-4" :class="{ 'opacity-25': form.processing }" :disabled="form.processing">
-                    Confirm
-                </PrimaryButton>
-            </div>
+            <button type="submit"
+                    :disabled="form.processing"
+                    :class="{ 'opacity-50 cursor-not-allowed': form.processing }"
+                    class="w-full px-4 py-2.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-semibold transition-colors">
+                {{ form.processing ? 'Проверка…' : 'Подтвердить' }}
+            </button>
         </form>
     </GuestLayout>
 </template>

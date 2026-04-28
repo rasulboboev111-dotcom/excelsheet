@@ -74,7 +74,7 @@ const removeUser = (u) => {
                     <div class="px-6 py-4 border-b flex items-center justify-between">
                         <h3 class="font-bold">Список пользователей</h3>
                         <button @click="showCreate = !showCreate"
-                                class="px-3 py-1.5 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39]">
+                                class="px-3 py-1.5 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">
                             {{ showCreate ? 'Отмена' : '+ Добавить пользователя' }}
                         </button>
                     </div>
@@ -111,7 +111,7 @@ const removeUser = (u) => {
                                     Сделать администратором
                                 </label>
                                 <button type="submit" :disabled="createForm.processing"
-                                        class="px-4 py-1.5 text-sm rounded bg-[#217346] text-white hover:bg-[#1a5d39] disabled:opacity-50">
+                                        class="px-4 py-1.5 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8] disabled:opacity-50">
                                     Создать
                                 </button>
                             </div>
@@ -136,7 +136,7 @@ const removeUser = (u) => {
                                     <td class="px-6 py-2 font-medium">{{ u.name }}</td>
                                     <td class="px-6 py-2 text-gray-600">{{ u.email }}</td>
                                     <td class="px-6 py-2">
-                                        <span v-if="u.is_admin" class="inline-block px-2 py-0.5 bg-[#217346] text-white text-xs rounded">admin</span>
+                                        <span v-if="u.is_admin" class="inline-block px-2 py-0.5 bg-[#2563eb] text-white text-xs rounded">admin</span>
                                         <span v-else class="text-gray-500 text-xs">user</span>
                                     </td>
                                     <td class="px-6 py-2 text-right space-x-2">

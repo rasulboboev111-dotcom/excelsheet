@@ -19,31 +19,32 @@ const verificationLinkSent = computed(() => props.status === 'verification-link-
 
 <template>
     <GuestLayout>
-        <Head title="Email Verification" />
+        <Head title="Подтверждение email" />
 
-        <div class="mb-4 text-sm text-gray-600">
-            Thanks for signing up! Before getting started, could you verify your email address by clicking on the link
-            we just emailed to you? If you didn't receive the email, we will gladly send you another.
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Подтвердите почту</h2>
+        <p class="text-sm text-gray-500 mb-5">
+            Спасибо за регистрацию! На вашу почту отправлена ссылка для подтверждения. Если письмо не пришло — мы можем выслать его повторно.
+        </p>
+
+        <div v-if="verificationLinkSent" class="mb-4 px-3 py-2 rounded-md bg-green-50 border border-green-200 text-sm text-green-700">
+            Новая ссылка отправлена на email, указанный при регистрации.
         </div>
 
-        <div class="mb-4 font-medium text-sm text-green-600" v-if="verificationLinkSent">
-            A new verification link has been sent to the email address you provided during registration.
-        </div>
+        <form @submit.prevent="submit" class="space-y-3">
+            <button type="submit"
+                    :disabled="form.processing"
+                    :class="{ 'opacity-50 cursor-not-allowed': form.processing }"
+                    class="w-full px-4 py-2.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-semibold transition-colors">
+                {{ form.processing ? 'Отправка…' : 'Отправить ссылку повторно' }}
+            </button>
 
-        <form @submit.prevent="submit">
-            <div class="mt-4 flex items-center justify-between">
-                <PrimaryButton :class="{ 'opacity-25': form.processing }" :disabled="form.processing">
-                    Resend Verification Email
-                </PrimaryButton>
-
-                <Link
-                    :href="route('logout')"
-                    method="post"
-                    as="button"
-                    class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                    >Log Out</Link
-                >
-            </div>
+            <Link
+                :href="route('logout')"
+                method="post"
+                as="button"
+                class="block w-full text-center text-sm text-gray-600 hover:text-gray-900 hover:underline">
+                Выйти из аккаунта
+            </Link>
         </form>
     </GuestLayout>
 </template>

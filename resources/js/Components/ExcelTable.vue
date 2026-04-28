@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { AgGridVue } from 'ag-grid-vue3';
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 import { HyperFormula } from 'hyperformula';
+import DropdownEditor from '@/Components/DropdownEditor.vue';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-balham.css';
 
@@ -17,7 +18,7 @@ const props = defineProps({
     colWidths: { type: Object, default: () => ({}) },     // { [field]: number }
     rowHeights: { type: Object, default: () => ({}) },    // { [rowIndex]: number }
     pinnedTopRowData: { type: Array, default: () => [] },
-    freezeRow: { type: Boolean, default: false }
+    freezeRow: { type: Boolean, default: false },
 });
 
 // Преобразует AG Grid (rowIndex, rowPinned) → абсолютный индекс в полном tableData
@@ -717,7 +718,6 @@ const defaultColDef = {
     cellStyle: (params) => {
         if (!params.data || !params.colDef.field) return null;
         const base = params.data[params.colDef.field + '_style'] || null;
-        // Скрываем ячейки, попавшие внутрь merge (но не top-left)
         const colIdx = colIndexMap.value[params.colDef.field];
         if (colIdx === undefined) return base;
         const cov = findCoveringMerge(params.node.rowIndex, colIdx);
@@ -739,7 +739,8 @@ const defaultColDef = {
     cellEditorSelector: (params) => {
         const list = props.validations?.[params.colDef.field];
         if (Array.isArray(list) && list.length > 0) {
-            return { component: 'agSelectCellEditor', params: { values: list } };
+            // Мягкая валидация: список-подсказки + возможность напечатать своё (как в Excel).
+            return { component: DropdownEditor, params: { values: list } };
         }
         return undefined;
     }
@@ -854,10 +855,10 @@ const finalColumnDefs = computed(() => {
 /* Selected column header — green underline like real Excel */
 .ag-theme-balham .excel-header-highlight,
 .ag-theme-balham .ag-header-cell.excel-header-highlight {
-    background-color: #d4dfd6 !important;
-    color: #107c41 !important;
+    background-color: #dbeafe !important;
+    color: #2563eb !important;
     font-weight: 600 !important;
-    box-shadow: inset 0 -2px 0 0 #107c41;
+    box-shadow: inset 0 -2px 0 0 #2563eb;
 }
 
 /* Selection range — Excel light-green tint */
@@ -865,10 +866,10 @@ const finalColumnDefs = computed(() => {
     background-color: rgba(16, 124, 65, 0.06) !important;
     z-index: 2 !important;
 }
-.ag-theme-balham .excel-range-top    { border-top:    2px solid #107c41 !important; }
-.ag-theme-balham .excel-range-bottom { border-bottom: 2px solid #107c41 !important; }
-.ag-theme-balham .excel-range-left   { border-left:   2px solid #107c41 !important; }
-.ag-theme-balham .excel-range-right  { border-right:  2px solid #107c41 !important; }
+.ag-theme-balham .excel-range-top    { border-top:    2px solid #2563eb !important; }
+.ag-theme-balham .excel-range-bottom { border-bottom: 2px solid #2563eb !important; }
+.ag-theme-balham .excel-range-left   { border-left:   2px solid #2563eb !important; }
+.ag-theme-balham .excel-range-right  { border-right:  2px solid #2563eb !important; }
 
 /* Fill handle — small green square in bottom-right of selection */
 .ag-theme-balham .excel-range-corner::after {
@@ -878,7 +879,7 @@ const finalColumnDefs = computed(() => {
     right: -4px;
     width: 7px;
     height: 7px;
-    background-color: #107c41;
+    background-color: #2563eb;
     border: 1.5px solid white;
     z-index: 100;
     cursor: crosshair;
@@ -888,7 +889,7 @@ const finalColumnDefs = computed(() => {
 /* Active cell — Excel deep green border, white inside */
 .ag-theme-balham .ag-cell-focus,
 .ag-theme-balham .excel-active-cell {
-    border: 2px solid #107c41 !important;
+    border: 2px solid #2563eb !important;
     outline: none !important;
     background-color: white !important;
     z-index: 6 !important;
@@ -907,10 +908,10 @@ const finalColumnDefs = computed(() => {
     background-color: #e8e8e8 !important;
 }
 .ag-theme-balham .ag-cell.excel-header-highlight.excel-row-number-cell {
-    background-color: #d4dfd6 !important;
-    color: #107c41 !important;
+    background-color: #dbeafe !important;
+    color: #2563eb !important;
     font-weight: 600 !important;
-    box-shadow: inset -2px 0 0 0 #107c41;
+    box-shadow: inset -2px 0 0 0 #2563eb;
 }
 
 /* Cells: thinner border + Excel default left-align for text, right-align for numbers handled inline */
@@ -946,15 +947,16 @@ const finalColumnDefs = computed(() => {
     z-index: 10;
 }
 .excel-row-resize-handle:hover {
-    background-color: #107c41;
+    background-color: #2563eb;
 }
 
-/* === Filter UX (Excel-style) =================================== */
+/* === Filter UX (modern / non-Excel) ============================ */
+/* Палитра: тёмно-фиолетовый акцент + светло-серый фон, скруглённые формы. */
 
 /* 1) Иконка фильтра в шапке: всегда чуть видна, ярче на hover */
 .ag-theme-balham .ag-header-cell .ag-header-cell-menu-button,
 .ag-theme-balham .ag-header-cell .ag-header-icon {
-    opacity: 0.55;
+    opacity: 0.6;
     transition: opacity .15s, color .15s;
 }
 .ag-theme-balham .ag-header-cell:hover .ag-header-cell-menu-button,
@@ -962,106 +964,128 @@ const finalColumnDefs = computed(() => {
     opacity: 1;
 }
 
-/* 2) Колонка с активным фильтром — зелёная подложка + зелёная воронка */
+/* 2) Колонка с активным фильтром — фиолетовая «таблетка» вокруг иконки + точка-индикатор */
 .ag-theme-balham .ag-header-cell.ag-header-cell-filtered {
-    background-color: #e8f3ee !important;
-    box-shadow: inset 0 -3px 0 0 #107c41;
+    background-color: #eff6ff !important;
+    box-shadow: inset 0 0 0 1px #bfdbfe;
+}
+.ag-theme-balham .ag-header-cell.ag-header-cell-filtered::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #2563eb;
+    box-shadow: 0 0 0 2px #fff;
 }
 .ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-header-cell-menu-button,
 .ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-icon-filter,
 .ag-theme-balham .ag-header-cell.ag-header-cell-filtered .ag-header-icon {
     opacity: 1 !important;
-    color: #107c41 !important;
+    color: #2563eb !important;
 }
 
-/* 3) Сам попап фильтра — белый, с тенью, как в Office */
+/* 3) Попап — карточка с большим скруглением и мягкой тенью */
 .ag-theme-balham .ag-popup .ag-menu,
 .ag-theme-balham .ag-filter {
-    border: 1px solid #b8b8b8 !important;
-    border-radius: 4px !important;
-    box-shadow: 0 6px 22px rgba(0,0,0,.18) !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 12px !important;
+    box-shadow: 0 12px 40px -8px rgba(17,24,39,.18), 0 4px 12px rgba(17,24,39,.06) !important;
     background: #fff !important;
-    min-width: 280px !important;
+    min-width: 300px !important;
+    overflow: hidden !important;
+    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif !important;
 }
 
-/* 4) Внутренние поля и селекты — ровные, с зелёным focus */
+/* 4) Внутренние поля — крупнее, со скруглением, фокус — фиолетовый */
 .ag-theme-balham .ag-filter-wrapper {
-    padding: 10px 12px 4px 12px !important;
+    padding: 14px 14px 6px 14px !important;
+    background: #fafafa !important;
 }
 .ag-theme-balham .ag-filter input[type="text"],
 .ag-theme-balham .ag-filter input[type="number"],
 .ag-theme-balham .ag-filter input[type="date"],
 .ag-theme-balham .ag-filter .ag-picker-field-wrapper,
 .ag-theme-balham .ag-filter select {
-    border: 1px solid #c8c6c4 !important;
-    border-radius: 2px !important;
-    padding: 4px 8px !important;
-    height: 28px !important;
-    font-size: 12px !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 8px !important;
+    padding: 8px 12px !important;
+    height: 36px !important;
+    font-size: 13px !important;
     background: #fff !important;
+    color: #111827 !important;
     box-sizing: border-box !important;
     width: 100% !important;
+    transition: border-color .15s, box-shadow .15s;
 }
 .ag-theme-balham .ag-filter input:focus,
 .ag-theme-balham .ag-filter .ag-picker-field-wrapper:focus-within {
-    border-color: #107c41 !important;
+    border-color: #2563eb !important;
     outline: none !important;
-    box-shadow: 0 0 0 1px #107c41 !important;
+    box-shadow: 0 0 0 3px rgba(37,99,235,.18) !important;
 }
 
-/* 5) Подпись «И/Или» между двумя условиями */
+/* 5) И / Или — мягкая «тонкая» панель посередине */
 .ag-theme-balham .ag-filter-condition {
-    margin: 6px 0 !important;
-    padding: 4px 0 !important;
-    border-top: 1px dashed #e1e1e1 !important;
-    border-bottom: 1px dashed #e1e1e1 !important;
-    font-size: 11px !important;
-    color: #666 !important;
+    margin: 10px 0 !important;
+    padding: 8px 10px !important;
+    background: #fff !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    color: #6b7280 !important;
     display: flex !important;
-    gap: 14px !important;
+    gap: 18px !important;
     justify-content: center !important;
 }
 
-/* 6) Нижняя панель кнопок: зелёный «Применить» (primary), серые «Очистить/Сбросить» */
+/* 6) Кнопочная панель: pill-кнопки, primary — фиолетовый градиент */
 .ag-theme-balham .ag-filter-apply-panel {
-    border-top: 1px solid #e1e1e1 !important;
-    background: #fafafa !important;
-    padding: 8px 12px !important;
+    border-top: 1px solid #e5e7eb !important;
+    background: #fff !important;
+    padding: 12px 14px !important;
     display: flex !important;
-    gap: 6px !important;
+    gap: 8px !important;
     justify-content: flex-end !important;
 }
 .ag-theme-balham .ag-filter-apply-panel button {
-    border: 1px solid #c8c6c4 !important;
-    border-radius: 2px !important;
-    padding: 5px 14px !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 999px !important;
+    padding: 7px 18px !important;
     font-size: 12px !important;
+    font-weight: 500 !important;
     background: #fff !important;
-    color: #444 !important;
+    color: #4b5563 !important;
     cursor: pointer !important;
-    min-width: 78px !important;
-    transition: background .1s, border-color .1s;
+    min-width: 84px !important;
+    transition: background .15s, border-color .15s, transform .08s;
 }
 .ag-theme-balham .ag-filter-apply-panel button:hover {
-    background: #f0f0f0 !important;
-    border-color: #a0a0a0 !important;
+    background: #f9fafb !important;
+    border-color: #d1d5db !important;
 }
-/* «Применить» — последняя кнопка справа, делаем primary-зелёной */
+.ag-theme-balham .ag-filter-apply-panel button:active {
+    transform: scale(.97);
+}
+/* «Применить» — последняя кнопка, фиолетовый primary с градиентом */
 .ag-theme-balham .ag-filter-apply-panel button:last-child {
-    background: #107c41 !important;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
     color: #fff !important;
-    border-color: #107c41 !important;
+    border-color: transparent !important;
     font-weight: 600 !important;
+    box-shadow: 0 1px 2px rgba(37,99,235,.3), 0 4px 10px -2px rgba(37,99,235,.4);
 }
 .ag-theme-balham .ag-filter-apply-panel button:last-child:hover {
-    background: #0e6938 !important;
-    border-color: #0e6938 !important;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+    box-shadow: 0 2px 4px rgba(37,99,235,.4), 0 6px 14px -2px rgba(37,99,235,.5);
 }
 
-/* 7) Подсказка под полем ввода фильтра — лёгкий placeholder */
+/* 7) Placeholder — тонкий, без курсива */
 .ag-theme-balham .ag-filter input::placeholder {
-    color: #a0a0a0 !important;
-    font-style: italic;
+    color: #9ca3af !important;
+    font-style: normal !important;
 }
 
 /* === конец Filter UX =========================================== */
