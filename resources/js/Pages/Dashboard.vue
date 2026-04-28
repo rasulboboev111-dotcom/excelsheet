@@ -1694,6 +1694,7 @@ onUnmounted(() => {
                     Скачать
                 </button>
                 <Link v-if="isAdmin" :href="route('users.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Пользователи</Link>
+                <Link v-if="isAdmin" :href="route('audit-log.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Журнал</Link>
                 <button v-if="isAdmin" @click="openPermissionsModal" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors">Права доступа</button>
                 <div class="flex items-center gap-2">
                     <span class="text-sm font-medium">{{ $page.props.auth?.user?.name || 'User' }}</span>

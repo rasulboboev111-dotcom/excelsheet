@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SheetAuditLogController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -56,6 +57,8 @@ Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
     Route::post('/users', [UserController::class, 'store'])->name('users.store');
     Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+
+    Route::get('/audit-log', [SheetAuditLogController::class, 'index'])->name('audit-log.index');
 });
 
 Route::middleware('auth')->group(function () {

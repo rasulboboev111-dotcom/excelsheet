@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\Sheet;
+use App\Models\SheetAuditLog;
 use App\Models\SheetData;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Auth\Access\AuthorizationException;
 use Inertia\Inertia;
 
@@ -15,6 +17,56 @@ class SheetController extends Controller
     private const MAX_IMPORT_COLS = 1000;
     private const MAX_UPDATE_ROWS = 50000;
     private const MAX_ROW_INDEX = 1048576;
+
+    /**
+     * Приводит значение ячейки к каноничному виду для сравнения «было/стало».
+     * Решает кейс: БД отдала число `5`, фронт прислал строку `"5"` — раньше это
+     * было «изменением», сейчас оба нормализуются к 5.0 и diff не сработает.
+     * Правила:
+     *   null / '' / "   " → null (всё это «пусто»)
+     *   "5", "5.0", " 5 " → 5.0 (число)
+     *   "true"/"false"    → bool
+     *   формула '=...'    → строка как есть
+     *   прочее            → исходное значение
+     */
+    private function normalizeCellValue($v)
+    {
+        if ($v === null) return null;
+        if (is_bool($v)) return $v;
+        if (is_int($v) || is_float($v)) return (float) $v;
+        if (is_string($v)) {
+            $t = trim($v);
+            if ($t === '') return null;
+            if ($t[0] === '=') return $t; // формула
+            // Целое или десятичное число (с опциональным знаком, без exp).
+            if (preg_match('/^-?\d+(?:[.,]\d+)?$/', $t)) {
+                return (float) str_replace(',', '.', $t);
+            }
+            return $t;
+        }
+        return $v;
+    }
+
+    /**
+     * Записывает событие в журнал аудита. Используется во всех мутациях:
+     * cell_edit / sheet_created / sheet_renamed / sheet_deleted / sheet_imported /
+     * row_inserted / row_deleted. Сбои логирования НЕ должны валить основную операцию.
+     */
+    private function logAudit(string $action, ?int $sheetId, ?array $details = null): void
+    {
+        try {
+            SheetAuditLog::create([
+                'user_id' => Auth::id(),
+                'sheet_id' => $sheetId,
+                'action' => $action,
+                'details' => $details,
+                'ip' => request()->ip(),
+            ]);
+        } catch (\Throwable $e) {
+            // Логируем в основной лог приложения, но не прерываем запрос.
+            \Log::warning('Audit log write failed: ' . $e->getMessage(), ['action' => $action]);
+        }
+    }
 
     private function authorizeView(Sheet $sheet): void
     {
@@ -132,7 +184,24 @@ class SheetController extends Controller
             'rows.*.data'       => 'required|array|max:' . self::MAX_IMPORT_COLS,
         ]);
 
+        // Карта field → headerName (имя колонки, которое видит пользователь)
+        $columnsMap = collect($sheet->columns ?? [])
+            ->mapWithKeys(fn ($c) => [($c['field'] ?? '') => ($c['headerName'] ?? ($c['field'] ?? ''))])
+            ->all();
+
+        // Чтобы записать «было → стало», читаем старое содержимое затронутых строк
+        // ОДНИМ запросом, потом сравниваем поле за полем.
+        $rowIndexes = array_map(fn ($r) => (int) $r['row_index'], $payload['rows']);
+        $existingByIdx = SheetData::where('sheet_id', $sheet->id)
+            ->whereIn('row_index', $rowIndexes)
+            ->get()
+            ->keyBy('row_index');
+
+        $changes = []; // [{ row, col, col_name, old, new }, …]
+
         foreach ($payload['rows'] as $row) {
+            $rowIndex = (int) $row['row_index'];
+
             // Sanitize row_data: ensure all values are scalar or null (no nested objects/arrays
             // that could carry unexpected payloads). _style entries are arrays — allow one level.
             $clean = [];
@@ -141,7 +210,6 @@ class SheetController extends Controller
                 if (is_scalar($value) || $value === null) {
                     $clean[$key] = $value;
                 } elseif (is_array($value)) {
-                    // _style sub-array — keep only scalar leaves
                     $sub = [];
                     foreach ($value as $sk => $sv) {
                         if (is_string($sk) && (is_scalar($sv) || $sv === null)) {
@@ -152,10 +220,38 @@ class SheetController extends Controller
                 }
             }
 
+            // Diff: только value-поля (не *_style), которые поменялись.
+            $oldData = $existingByIdx->get($rowIndex)?->row_data ?? [];
+            // Объединяем ключи old+new чтобы поймать и удалённые поля.
+            $allKeys = array_unique(array_merge(array_keys($oldData), array_keys($clean)));
+            foreach ($allKeys as $field) {
+                if (str_ends_with($field, '_style')) continue; // стили — не «значения», в журнал не пишем
+                $oldVal = $oldData[$field] ?? null;
+                $newVal = $clean[$field] ?? null;
+                // Нормализуем перед сравнением: "5" === 5, "" === null и т.п.
+                if ($this->normalizeCellValue($oldVal) === $this->normalizeCellValue($newVal)) continue;
+                $changes[] = [
+                    'row'      => $rowIndex + 1, // человеко-читаемая нумерация с 1
+                    'col'      => $field,
+                    'col_name' => $columnsMap[$field] ?? $field,
+                    'old'      => $oldVal,
+                    'new'      => $newVal,
+                ];
+            }
+
             SheetData::updateOrCreate(
-                ['sheet_id' => $sheet->id, 'row_index' => (int) $row['row_index']],
+                ['sheet_id' => $sheet->id, 'row_index' => $rowIndex],
                 ['row_data' => $clean]
             );
+        }
+
+        // Лог пишем ТОЛЬКО если реально менялось хоть одно значение.
+        // Стилевые правки (жирный/цвет) в журнал не попадают — это шум.
+        if (!empty($changes)) {
+            $this->logAudit('cell_edit', $sheet->id, [
+                'cells_changed' => count($changes),
+                'sample'        => array_slice($changes, 0, 20),
+            ]);
         }
 
         return back();
@@ -166,16 +262,22 @@ class SheetController extends Controller
         // Создавать листы может только админ.
         $this->authorizeAdmin();
 
-        $sheet = Sheet::create([
-            'name' => 'Новый лист',
-            'user_id' => Auth::id(),
-            'order' => Sheet::max('order') + 1,
-            'columns' => [
-                ['field' => 'A', 'headerName' => 'A'],
-                ['field' => 'B', 'headerName' => 'B'],
-                ['field' => 'C', 'headerName' => 'C'],
-            ]
-        ]);
+        // Транзакция + блокировка max(order) — иначе при одновременном создании
+        // двумя пользователями оба получат одинаковый order.
+        $sheet = DB::transaction(function () {
+            $maxOrder = (int) Sheet::lockForUpdate()->max('order');
+            return Sheet::create([
+                'name' => 'Новый лист',
+                'user_id' => Auth::id(),
+                'order' => $maxOrder + 1,
+                'columns' => [
+                    ['field' => 'A', 'headerName' => 'A'],
+                    ['field' => 'B', 'headerName' => 'B'],
+                    ['field' => 'C', 'headerName' => 'C'],
+                ]
+            ]);
+        });
+        $this->logAudit('sheet_created', $sheet->id, ['name' => $sheet->name]);
         return redirect()->route('dashboard', ['sheet_id' => $sheet->id]);
     }
 
@@ -210,20 +312,29 @@ class SheetController extends Controller
             ];
         }
 
-        $sheet = Sheet::create([
-            'name'    => $payload['name'],
-            'user_id' => Auth::id(),
-            'order'   => (int) Sheet::max('order') + 1,
-            'columns' => $columns,
-        ]);
-
-        foreach ($payload['rows'] ?? [] as $row) {
-            SheetData::create([
-                'sheet_id'  => $sheet->id,
-                'row_index' => (int) $row['row_index'],
-                'row_data'  => $row['data'] ?? [],
+        $sheet = DB::transaction(function () use ($payload, $columns) {
+            $maxOrder = (int) Sheet::lockForUpdate()->max('order');
+            $newSheet = Sheet::create([
+                'name'    => $payload['name'],
+                'user_id' => Auth::id(),
+                'order'   => $maxOrder + 1,
+                'columns' => $columns,
             ]);
-        }
+            foreach ($payload['rows'] ?? [] as $row) {
+                SheetData::create([
+                    'sheet_id'  => $newSheet->id,
+                    'row_index' => (int) $row['row_index'],
+                    'row_data'  => $row['data'] ?? [],
+                ]);
+            }
+            return $newSheet;
+        });
+
+        $this->logAudit('sheet_imported', $sheet->id, [
+            'name' => $sheet->name,
+            'rows_count' => count($payload['rows'] ?? []),
+            'columns_count' => count($columns),
+        ]);
 
         return response()->json([
             'id'      => $sheet->id,
@@ -236,9 +347,17 @@ class SheetController extends Controller
     {
         $this->authorizeEdit($sheet);
 
+        $oldName = $sheet->name;
         $sheet->update($request->validate([
             'name' => 'required|string|max:255',
         ]));
+
+        if ($oldName !== $sheet->name) {
+            $this->logAudit('sheet_renamed', $sheet->id, [
+                'old_name' => $oldName,
+                'new_name' => $sheet->name,
+            ]);
+        }
 
         return back();
     }
@@ -247,6 +366,19 @@ class SheetController extends Controller
     {
         // Удаление листа = admin only (строже, чем edit).
         $this->authorizeAdmin();
+
+        $sheetName = $sheet->name;
+        $sheetId = $sheet->id;
+
+        // Логируем ДО delete:
+        // 1) если delete бросит — запись об удалении всё равно есть (и можно расследовать).
+        // 2) sheet_id передаём настоящий — FK на sheet_audit_logs.sheet_id настроен
+        //    nullOnDelete, так что запись переживёт каскад: при удалении листа эта
+        //    строка журнала просто получит sheet_id = NULL (имя сохранено в details).
+        $this->logAudit('sheet_deleted', $sheetId, [
+            'sheet_id' => $sheetId,
+            'name' => $sheetName,
+        ]);
 
         $sheet->delete();
         return redirect()->route('dashboard');
@@ -272,6 +404,8 @@ class SheetController extends Controller
             'row_data' => []
         ]);
 
+        $this->logAudit('row_inserted', $sheet->id, ['row_index' => $rowIndex]);
+
         return back();
     }
 
@@ -292,6 +426,8 @@ class SheetController extends Controller
         SheetData::where('sheet_id', $sheet->id)
             ->where('row_index', '>', $rowIndex)
             ->decrement('row_index');
+
+        $this->logAudit('row_deleted', $sheet->id, ['row_index' => $rowIndex]);
 
         return back();
     }
