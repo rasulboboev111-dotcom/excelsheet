@@ -36,8 +36,21 @@ export function useSheetMeta(sheetIdRef) {
         try { localStorage.setItem(KEY(id), JSON.stringify(meta.value)); } catch (_) {}
     };
 
-    watch(sheetIdRef, (id) => load(id), { immediate: true });
-    watch(meta, save, { deep: true });
+    // Дебаунс: ввод значения в ячейку → ребилд rowHeights/colWidths… не должен на каждое
+    // нажатие лезть в localStorage с JSON.stringify огромного объекта. Записываем не чаще раз/300мс.
+    let _saveTimer = null;
+    const scheduleSave = () => {
+        if (_saveTimer) clearTimeout(_saveTimer);
+        _saveTimer = setTimeout(() => { _saveTimer = null; save(); }, 300);
+    };
+
+    // Загружая, флагом блокируем обратное сохранение (которое иначе сразу же
+    // запишет только что прочитанное значение из watch deep).
+    let _loading = false;
+    const safeLoad = (id) => { _loading = true; load(id); _loading = false; };
+
+    watch(sheetIdRef, (id) => safeLoad(id), { immediate: true });
+    watch(meta, () => { if (!_loading) scheduleSave(); }, { deep: true });
 
     const allMetaForExport = () => {
         const result = {};

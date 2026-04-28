@@ -97,6 +97,31 @@ class SheetController extends Controller
         ]);
     }
 
+    /**
+     * GET /sheets/{sheet}/data — отдаёт rowData листа в JSON.
+     * Нужен для экспорта в .xlsx нескольких листов: фронт держит в памяти только активный,
+     * остальные дозагружает по этому endpoint'у.
+     */
+    public function fetchData(Sheet $sheet)
+    {
+        $userId = Auth::id();
+        if (!$sheet->canView($userId)) {
+            throw new AuthorizationException('No view access to this sheet.');
+        }
+
+        $rows = SheetData::where('sheet_id', $sheet->id)
+            ->orderBy('row_index')
+            ->get()
+            ->map(fn ($r) => array_merge(['id' => $r->id], $r->row_data));
+
+        return response()->json([
+            'sheet_id' => $sheet->id,
+            'name'     => $sheet->name,
+            'columns'  => $sheet->columns ?? [],
+            'rows'     => $rows,
+        ]);
+    }
+
     public function updateData(Request $request, Sheet $sheet)
     {
         $this->authorizeEdit($sheet);

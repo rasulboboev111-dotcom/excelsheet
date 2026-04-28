@@ -137,22 +137,46 @@ const selectAll = () => {
     if (f) gridApi.value?.setFocusedCell?.(0, f);
 };
 
-const rowNumCellRenderer = (params) => {
-    const absR = toAbsRow(params.node?.rowIndex, params.node?.rowPinned);
-    const wrap = document.createElement('div');
-    wrap.className = 'excel-row-num-wrap';
-    wrap.textContent = absR >= 0 ? String(absR + 1) : '';
-    wrap.addEventListener('click', (e) => {
-        if (e.target && e.target.classList && e.target.classList.contains('excel-row-resize-handle')) return;
-        if (absR >= 0) selectEntireRow(absR);
-    });
-    const handle = document.createElement('div');
-    handle.className = 'excel-row-resize-handle';
-    handle.title = 'Потяните, чтобы изменить высоту строки';
-    handle.addEventListener('mousedown', (e) => { if (absR >= 0) startRowResize(e, absR); });
-    wrap.appendChild(handle);
-    return wrap;
-};
+// Class-renderer с явным destroy() — AG Grid вызывает его при пересборе/прокрутке,
+// чтобы мы могли отвязать обработчики и не плодить замыкания.
+class RowNumCellRenderer {
+    init(params) {
+        this.params = params;
+        const absR = toAbsRow(params.node?.rowIndex, params.node?.rowPinned);
+        this.absR = absR;
+        const wrap = document.createElement('div');
+        wrap.className = 'excel-row-num-wrap';
+        wrap.textContent = absR >= 0 ? String(absR + 1) : '';
+        this._onClick = (e) => {
+            if (e.target && e.target.classList && e.target.classList.contains('excel-row-resize-handle')) return;
+            if (this.absR >= 0) selectEntireRow(this.absR);
+        };
+        wrap.addEventListener('click', this._onClick);
+        const handle = document.createElement('div');
+        handle.className = 'excel-row-resize-handle';
+        handle.title = 'Потяните, чтобы изменить высоту строки';
+        this._onHandleDown = (e) => { if (this.absR >= 0) startRowResize(e, this.absR); };
+        handle.addEventListener('mousedown', this._onHandleDown);
+        wrap.appendChild(handle);
+        this._wrap = wrap;
+        this._handle = handle;
+    }
+    getGui() { return this._wrap; }
+    refresh(params) {
+        // Возвращаем false — AG Grid пересоздаст компонент. Перерисовывать
+        // имеет смысл, только если изменился rowIndex; проще пересоздать.
+        return false;
+    }
+    destroy() {
+        if (this._wrap && this._onClick) this._wrap.removeEventListener('click', this._onClick);
+        if (this._handle && this._onHandleDown) this._handle.removeEventListener('mousedown', this._onHandleDown);
+        this._wrap = null;
+        this._handle = null;
+        this._onClick = null;
+        this._onHandleDown = null;
+        this.params = null;
+    }
+}
 
 const onColumnResized = (event) => {
     if (!event || !event.column) return;
@@ -180,6 +204,14 @@ const selectionStart = ref(null);
 const selectionEnd = ref(null);
 const isSelecting = ref(false);
 
+// Полный набор данных для HyperFormula с учётом закреплённой первой строки.
+// Иначе формула =A1 в body-row 0 (когда freezeRow=true) ссылается сама на себя:
+// HF не знает про вынутую шапку.
+const fullRowsForHF = () => {
+    const pinned = (props.freezeRow && props.pinnedTopRowData?.length) ? [props.pinnedTopRowData[0]] : [];
+    return [...pinned, ...(props.rowData || [])];
+};
+
 const updateHFData = () => {
     const sheetName = 'Sheet1';
     let sheetId = hf.getSheetId(sheetName);
@@ -189,22 +221,37 @@ const updateHFData = () => {
     }
     if (typeof sheetId !== 'number') return;
     const fields = props.columnDefs.map(c => c.field);
-    const hfData = props.rowData.map(row => fields.map(field => row[field] ?? ''));
+    const hfData = fullRowsForHF().map(row => fields.map(field => row[field] ?? ''));
     hf.setSheetContent(sheetId, hfData);
 };
 
-// Синхронизируем HyperFormula при любых внешних изменениях данных/колонок
-watch(() => [props.rowData?.length, props.columnDefs?.length], () => {
-    updateHFData();
-    setTimeout(() => gridApi.value?.refreshCells({ force: true }), 0);
-}, { flush: 'post' });
+// Throttled обновление HF: при паст/филл/автосумм мутируется тот же массив (длина та же),
+// просто [length] не сработает. Делаем глубокий watch по ссылкам данных.
+let _hfThrottleTimer = null;
+const scheduleHFUpdate = () => {
+    if (_hfThrottleTimer) return;
+    _hfThrottleTimer = setTimeout(() => {
+        _hfThrottleTimer = null;
+        updateHFData();
+        gridApi.value?.refreshCells({ force: true });
+    }, 50);
+};
+watch(() => props.rowData, scheduleHFUpdate, { deep: true });
+watch(() => props.columnDefs?.length, scheduleHFUpdate);
+watch(() => props.freezeRow, scheduleHFUpdate);
+watch(() => props.pinnedTopRowData, scheduleHFUpdate, { deep: true });
 
 const getCellValue = (params) => {
     const value = params.data[params.colDef.field];
     if (typeof value === 'string' && value.startsWith('=')) {
         const sheetId = hf.getSheetId('Sheet1');
         const colIndex = props.columnDefs.findIndex(c => c.field === params.colDef.field);
-        const rowIndex = params.node.rowIndex;
+        // Абсолютный индекс строки в HF: учитываем закреплённую шапку.
+        const rowPinned = params.node.rowPinned;
+        const bodyIdx = params.node.rowIndex;
+        const rowIndex = rowPinned === 'top'
+            ? 0
+            : (props.freezeRow ? bodyIdx + 1 : bodyIdx);
         try {
             const cellValue = hf.getCellValue({ sheet: sheetId, col: colIndex, row: rowIndex });
             return cellValue instanceof Error ? '#ERROR!' : cellValue;
@@ -272,8 +319,16 @@ const onCellMouseDown = (params) => {
     if (colIndex === -1) return; // pinned row-num column — клик обрабатывается через cellRenderer
     const absR = toAbsRow(params.node.rowIndex, params.node.rowPinned);
     if (absR < 0) return;
-    selectionStart.value = { row: absR, col: colIndex, rowData: params.node.data };
-    selectionEnd.value   = { row: absR, col: colIndex, rowData: params.node.data };
+
+    // Shift+click — расширяем существующее выделение от уже выбранного start.
+    // Без Shift — обычный клик стартует новый диапазон.
+    const shiftKey = !!(params.event && params.event.shiftKey);
+    if (shiftKey && selectionStart.value) {
+        selectionEnd.value = { row: absR, col: colIndex, rowData: params.node.data };
+    } else {
+        selectionStart.value = { row: absR, col: colIndex, rowData: params.node.data };
+        selectionEnd.value   = { row: absR, col: colIndex, rowData: params.node.data };
+    }
 
     onCellFocused({
         column: params.column,
@@ -315,6 +370,8 @@ onUnmounted(() => {
     document.removeEventListener('mouseup', onRowResizeEnd);
     if (growRowsTimer) { clearTimeout(growRowsTimer); growRowsTimer = null; }
     if (growColsTimer) { clearTimeout(growColsTimer); growColsTimer = null; }
+    if (_hfThrottleTimer) { clearTimeout(_hfThrottleTimer); _hfThrottleTimer = null; }
+    try { hf.destroy(); } catch (_) {}
     if (resizeTooltipEl) {
         resizeTooltipEl.remove();
         resizeTooltipEl = null;
@@ -760,7 +817,7 @@ const finalColumnDefs = computed(() => {
         sortable: false,
         filter: false,
         suppressSizeToFit: true,
-        cellRenderer: rowNumCellRenderer,
+        cellRenderer: RowNumCellRenderer,
         cellClassRules: {
             'excel-row-number-cell': () => true,
             'excel-header-highlight': (params) => {

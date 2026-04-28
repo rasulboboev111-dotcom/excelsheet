@@ -29,6 +29,7 @@ use App\Http\Controllers\UserController;
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [SheetController::class, 'index'])->name('dashboard');
     Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])->name('sheets.update');
+    Route::get('/sheets/{sheet}/data', [SheetController::class, 'fetchData'])->name('sheets.fetchData');
     Route::post('/sheets/{sheet}/data', [SheetController::class, 'updateData'])->name('sheets.updateData');
     Route::post('/sheets/{sheet}/insert-row', [SheetController::class, 'insertRow'])->name('sheets.insertRow');
     Route::post('/sheets/{sheet}/delete-row', [SheetController::class, 'deleteRow'])->name('sheets.deleteRow');

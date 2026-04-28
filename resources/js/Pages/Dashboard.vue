@@ -911,9 +911,24 @@ const handleRibbonAction = ({ type, value }) => {
             const isLeftEdge = ci === 0;
             const isRightEdge = ci === colsLen - 1;
             switch (type) {
-                case 'applyCellStyle':
+                case 'applyCellStyle': {
+                    // Чистим все возможные предыдущие границы перед применением пресета,
+                    // иначе CSS-shorthand "border" + оставшиеся "borderTop/Bottom/Left/Right"
+                    // дают непредсказуемый результат (shorthand сбрасывает longhand или наоборот).
+                    const clearBorders = () => {
+                        delete style.border;
+                        delete style.borderTop; delete style.borderBottom;
+                        delete style.borderLeft; delete style.borderRight;
+                    };
+                    // Шорткат для «общих границ всех 4 сторон» через longhand (без shorthand-конфликта).
+                    const setAllSides = (val) => {
+                        style.borderTop = val; style.borderBottom = val;
+                        style.borderLeft = val; style.borderRight = val;
+                    };
+                    clearBorders();
                     if (value === 'normal') {
-                        style.backgroundColor = 'transparent'; style.color = '#000000'; delete style.border; style.fontWeight = 'normal'; style.fontStyle = 'normal'; style.fontSize = '11px';
+                        style.backgroundColor = 'transparent'; style.color = '#000000';
+                        style.fontWeight = 'normal'; style.fontStyle = 'normal'; style.fontSize = '11px';
                     } else if (value === 'neutral') {
                         style.backgroundColor = '#ffeb9c'; style.color = '#9c6500';
                     } else if (value === 'bad') {
@@ -921,35 +936,36 @@ const handleRibbonAction = ({ type, value }) => {
                     } else if (value === 'good') {
                         style.backgroundColor = '#c6efce'; style.color = '#006100';
                     } else if (value === 'input') {
-                        style.backgroundColor = '#f2dddc'; style.color = '#e26b0a'; style.border = '1px solid #7f7f7f';
+                        style.backgroundColor = '#f2dddc'; style.color = '#e26b0a'; setAllSides('1px solid #7f7f7f');
                     } else if (value === 'output') {
-                        style.backgroundColor = '#f2f2f2'; style.color = '#3f3f3f'; style.border = '1px solid #3f3f3f'; style.fontWeight = 'bold';
+                        style.backgroundColor = '#f2f2f2'; style.color = '#3f3f3f'; setAllSides('1px solid #3f3f3f'); style.fontWeight = 'bold';
                     } else if (value === 'calc') {
-                        style.backgroundColor = '#ffffff'; style.color = '#fa7d00'; style.border = '1px solid #7f7f7f'; style.fontWeight = 'bold';
+                        style.backgroundColor = '#ffffff'; style.color = '#fa7d00'; setAllSides('1px solid #7f7f7f'); style.fontWeight = 'bold';
                     } else if (value === 'check') {
-                        style.backgroundColor = '#a5a5a5'; style.color = '#ffffff'; style.border = '2px solid #3f3f3f'; style.fontWeight = 'bold';
+                        style.backgroundColor = '#a5a5a5'; style.color = '#ffffff'; setAllSides('2px solid #3f3f3f'); style.fontWeight = 'bold';
                     } else if (value === 'explain') {
                         style.backgroundColor = 'transparent'; style.color = '#7f7f7f'; style.fontStyle = 'italic';
                     } else if (value === 'note') {
-                        style.backgroundColor = '#ffffcc'; style.color = '#000000'; style.border = '1px solid #b2b2b2';
+                        style.backgroundColor = '#ffffcc'; style.color = '#000000'; setAllSides('1px solid #b2b2b2');
                     } else if (value === 'linked') {
-                        style.backgroundColor = 'transparent'; style.color = '#fa7d00'; style.border = 'none'; style.borderBottom = '2px solid #ff8001';
+                        style.backgroundColor = 'transparent'; style.color = '#fa7d00'; style.borderBottom = '2px solid #ff8001';
                     } else if (value === 'warning') {
                         style.backgroundColor = 'transparent'; style.color = '#ff0000';
                     } else if (value === 'heading1') {
-                        style.fontSize = '24px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #4f81bd';
+                        style.fontSize = '24px'; style.fontWeight = 'bold'; style.color = '#000000'; style.borderBottom = '2px solid #4f81bd';
                     } else if (value === 'heading2') {
-                        style.fontSize = '18px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #4f81bd';
+                        style.fontSize = '18px'; style.fontWeight = 'bold'; style.color = '#000000'; style.borderBottom = '2px solid #4f81bd';
                     } else if (value === 'heading3') {
-                        style.fontSize = '14px'; style.fontWeight = 'bold'; style.color = '#000000'; style.border = 'none'; style.borderBottom = '2px solid #a5b592';
+                        style.fontSize = '14px'; style.fontWeight = 'bold'; style.color = '#000000'; style.borderBottom = '2px solid #a5b592';
                     } else if (value === 'heading4') {
                         style.fontSize = '12px'; style.fontWeight = 'bold'; style.color = '#000000';
                     } else if (value === 'total') {
-                        style.fontWeight = 'bold'; style.border = 'none'; style.borderBottom = '3px double #4f81bd'; style.borderTop = '1px solid #4f81bd';
+                        style.fontWeight = 'bold'; style.borderBottom = '3px double #4f81bd'; style.borderTop = '1px solid #4f81bd';
                     } else if (value === 'title') {
                         style.fontSize = '28px'; style.fontWeight = 'bold'; style.color = '#000000';
                     }
                     break;
+                }
                 case 'bold': style.fontWeight = targetState.bold; break;
                 case 'italic': style.fontStyle = targetState.italic; break;
                 case 'underline': style.textDecoration = targetState.underline; break;
@@ -1435,18 +1451,51 @@ const exportXlsx = async () => {
         alert('Откройте лист, который хотите скачать.');
         return;
     }
-    // Экспортируем активный лист (его данные хранятся клиентом).
-    // Другие листы пользователя не выгружаем — их rowData нет в памяти браузера.
-    const sheetsForExport = [{
-        name: props.activeSheet.name,
-        hidden: !!sheetMeta.value.hidden,
-        columnDefs: columnDefs.value,
-        rowData: tableData.value,
-        merges: sheetMeta.value.merges || [],
-        validations: sheetMeta.value.validations || {},
-        colWidths: sheetMeta.value.colWidths || {},
-        rowHeights: sheetMeta.value.rowHeights || {}
-    }];
+    const allSheets = props.sheets || [];
+    const activeId = props.activeSheet.id;
+
+    // Локальная мета (merges/validations/colWidths/rowHeights) для каждого листа
+    // живёт в localStorage. Для активного — берём sheetMeta.value (актуальная копия).
+    const metaFor = (id) => {
+        if (id === activeId) return sheetMeta.value;
+        try { return JSON.parse(localStorage.getItem(`excel_sheet_meta_${id}`) || '{}'); }
+        catch (_) { return {}; }
+    };
+
+    // rowData неактивных листов не лежит в памяти браузера → дотягиваем GET-запросами.
+    let sheetsForExport;
+    try {
+        sheetsForExport = await Promise.all(allSheets.map(async (s) => {
+            let rowData;
+            let cols;
+            if (s.id === activeId) {
+                rowData = tableData.value;
+                cols = columnDefs.value;
+            } else {
+                const resp = await axios.get(route('sheets.fetchData', s.id));
+                rowData = resp.data?.rows || [];
+                cols = (resp.data?.columns && resp.data.columns.length)
+                    ? resp.data.columns
+                    : (s.columns && s.columns.length ? s.columns : []);
+            }
+            const m = metaFor(s.id);
+            return {
+                name: s.name,
+                hidden: !!m.hidden,
+                columnDefs: cols,
+                rowData,
+                merges: m.merges || [],
+                validations: m.validations || {},
+                colWidths: m.colWidths || {},
+                rowHeights: m.rowHeights || {},
+            };
+        }));
+    } catch (err) {
+        console.error(err);
+        alert('Не удалось загрузить данные одного из листов: ' + (err?.message || err));
+        return;
+    }
+
     const filename = (props.activeSheet.name || 'export').replace(/[/\\?%*:|"<>]/g, '_') + '.xlsx';
     try {
         await writeXlsxFile(filename, sheetsForExport);

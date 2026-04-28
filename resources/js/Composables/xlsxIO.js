@@ -77,16 +77,22 @@ const cellStyleFromExcel = (cell) => {
     return Object.keys(out).length > 0 ? out : null;
 };
 
-// Convert Excel-serial number → JS Date
+// Excel-serial ↔ JS Date с коррекцией «фантомного 29 февраля 1900».
+// Excel ошибочно считает 1900-й високосным; для serial < 60 (<= 1900-02-28) реальная
+// дата на 1 день ПОЗЖЕ относительно «честного» расчёта от 1900-01-01.
+// Формулы ниже поправлены на этот сдвиг.
 export const excelSerialToDate = (serial) => {
-    if (typeof serial !== 'number') return null;
-    // Excel: day 1 = 1900-01-01, but treats 1900 as leap (bug). Use 25569 = days from 1900-01-01 to 1970-01-01 + 2.
-    const utcDays = serial - 25569;
+    if (typeof serial !== 'number' || !isFinite(serial)) return null;
+    // serial >= 60 — после фантомного дня. serial < 60 — нужно сдвинуть на +1.
+    const adjusted = serial < 60 ? serial : serial - 1;
+    // 25568 = дней от 1900-01-01 до 1970-01-01 (без фантомного дня).
+    const utcDays = adjusted - 25568;
     const ms = utcDays * 86400 * 1000;
     return new Date(ms);
 };
 const dateToExcelSerial = (date) => {
-    return date.getTime() / (86400 * 1000) + 25569;
+    const days = date.getTime() / (86400 * 1000) + 25568;
+    return days < 60 ? days : days + 1;
 };
 
 // Read .xlsx File → workbook structure { sheets: [{ name, hidden, columnDefs, rowData, merges, validations, colWidths, rowHeights }] }
@@ -290,18 +296,14 @@ export async function writeXlsxFile(filename, sheets) {
             state: sheet.hidden ? 'hidden' : 'visible'
         });
 
-        // Column widths only — БЕЗ header, чтобы exceljs не вставлял авто-шапку.
-        // Данные пишем начиная с row 1 (как ожидает наш импорт).
-        const cols = (sheet.columnDefs || []).map(c => {
-            const w = sheet.colWidths?.[c.field];
-            return { key: c.field, width: w ? Math.max(8, w / 7) : 12 };
-        });
-        ws.columns = cols;
+        const colDefs = sheet.columnDefs || [];
+        const rows = sheet.rowData || [];
 
-        // Rows
-        (sheet.rowData || []).forEach((rowObj, ri) => {
+        // Rows — пишем напрямую через getRow(N), не используем ws.columns,
+        // чтобы исключить любые «фантомные» строки от автогенерации шапки exceljs.
+        rows.forEach((rowObj, ri) => {
             const r = ws.getRow(ri + 1);
-            (sheet.columnDefs || []).forEach((cd, ci) => {
+            colDefs.forEach((cd, ci) => {
                 const cell = r.getCell(ci + 1);
                 const raw = rowObj[cd.field];
                 if (raw === null || raw === undefined || raw === '') {
@@ -314,7 +316,6 @@ export async function writeXlsxFile(filename, sheets) {
                     cell.value = raw;
                 } else if (typeof raw === 'string') {
                     const trimmed = raw.trim();
-                    // Только реально числовая строка ("123", "-1.5", "1.5e3") → число.
                     if (trimmed !== '' && /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
                         const num = Number(trimmed);
                         cell.value = isFinite(num) ? num : raw;
@@ -330,6 +331,13 @@ export async function writeXlsxFile(filename, sheets) {
             r.commit();
         });
 
+        // Column widths — отдельно, после записи строк (не задействует header).
+        colDefs.forEach((cd, ci) => {
+            const w = sheet.colWidths?.[cd.field];
+            const col = ws.getColumn(ci + 1);
+            col.width = w ? Math.max(8, w / 7) : 12;
+        });
+
         // Merges
         (sheet.merges || []).forEach(m => {
             const r1 = m.row + 1;
@@ -339,15 +347,15 @@ export async function writeXlsxFile(filename, sheets) {
             try { ws.mergeCells(r1, c1, r2, c2); } catch (e) {}
         });
 
-        // Data validations
+        // Data validations — теперь данные с row 1, а не с row 2.
         Object.entries(sheet.validations || {}).forEach(([field, list]) => {
             if (!Array.isArray(list) || list.length === 0) return;
-            const colIdx = (sheet.columnDefs || []).findIndex(c => c.field === field);
+            const colIdx = colDefs.findIndex(c => c.field === field);
             if (colIdx === -1) return;
             const colLetter = colNumberToLetter(colIdx + 1);
-            const lastRow = (sheet.rowData || []).length || 1;
+            const lastRow = rows.length || 1;
             const formula = '"' + list.join(',') + '"';
-            for (let r = 2; r <= lastRow; r++) {
+            for (let r = 1; r <= lastRow; r++) {
                 ws.getCell(`${colLetter}${r}`).dataValidation = {
                     type: 'list',
                     allowBlank: true,
