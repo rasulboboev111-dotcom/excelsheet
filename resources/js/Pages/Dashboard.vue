@@ -536,6 +536,33 @@ const SYNC_DEBOUNCE_MS = 400;
 // сбрасываем сразу, не ждём таймер. Защита от неограниченного роста Set'а.
 const SYNC_MAX_PENDING = 1000;
 
+// Auto-save индикатор. saveStatus: 'saved' | 'saving' | 'error'.
+// 'saved' — нет правок в очереди и последний запрос завершился успешно.
+// 'saving' — в очереди есть изменения или летит запрос.
+// 'error' — последний запрос упал; продолжит копить, при следующем flush попытается ещё раз.
+const saveStatus = ref('saved');
+const lastSavedAt = ref(null);   // Date — когда был последний успешный flush.
+const lastSaveError = ref('');   // текст ошибки, если 'error'.
+
+const saveStatusLabel = computed(() => {
+    if (saveStatus.value === 'saving') return 'Сохранение…';
+    if (saveStatus.value === 'error')  return 'Не удалось сохранить';
+    if (lastSavedAt.value) return 'Все изменения сохранены';
+    return 'Сохранено';
+});
+const saveStatusTooltip = computed(() => {
+    if (saveStatus.value === 'error') {
+        return 'Ошибка: ' + (lastSaveError.value || 'не удалось отправить на сервер. Попробуйте ещё раз.');
+    }
+    if (lastSavedAt.value) {
+        const t = lastSavedAt.value;
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        return `Сохранено в ${hh}:${mm}`;
+    }
+    return null;
+});
+
 // Сборка тела запроса из буфера. Возвращает {url, payload} или null если нечего слать.
 const _buildSyncPayload = () => {
     if (_pendingSyncRows.size === 0) return null;
@@ -560,7 +587,24 @@ const _flushPendingSync = () => {
     if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
     const p = _buildSyncPayload();
     if (!p) return;
-    router.post(p.url, { rows: p.rows }, { preserveScroll: true, preserveState: true });
+    saveStatus.value = 'saving';
+    router.post(p.url, { rows: p.rows }, {
+        preserveScroll: true,
+        preserveState: true,
+        onSuccess: () => {
+            // Если за время запроса набежали новые правки — статус останется 'saving',
+            // следующий flush его сбросит. Иначе фиксируем 'saved'.
+            if (_pendingSyncRows.size === 0) {
+                saveStatus.value = 'saved';
+                lastSavedAt.value = new Date();
+                lastSaveError.value = '';
+            }
+        },
+        onError: (errors) => {
+            saveStatus.value = 'error';
+            lastSaveError.value = (errors && Object.values(errors)[0]) || 'Сетевая ошибка';
+        },
+    });
 };
 
 // «Гарантированная» доставка для unload / Inertia 'before'-навигации:
@@ -611,6 +655,10 @@ const _flushPendingSyncBeacon = () => {
 const syncChangesToServer = (rows) => {
     if (!Array.isArray(rows)) rows = [rows];
     rows.forEach(r => { if (r) _pendingSyncRows.add(r); });
+    // Любая правка → статус 'saving' (не ждём отправки на сервер: уже есть несохранённое).
+    if (_pendingSyncRows.size > 0 && saveStatus.value !== 'saving') {
+        saveStatus.value = 'saving';
+    }
     // Если очередь распухла (paste большого диапазона / быстрый поток правок,
     // постоянно сбрасывающий debounce-таймер) — сливаем немедленно, чтобы Set
     // не рос неограниченно. _flushPendingSync сам очищает таймер и Set.
@@ -1791,7 +1839,31 @@ onUnmounted(() => {
                     <span class="text-[14px]">Excel Online</span>
                 </div>
                 <div class="h-4 w-[1px] bg-white/30 mx-2"></div>
-                <div class="hover:bg-white/10 px-2 py-1 rounded cursor-pointer text-sm font-medium">{{ activeSheet?.name }} - Сохранено</div>
+                <div class="px-2 py-1 rounded text-sm font-medium flex items-center gap-1.5" :title="saveStatusTooltip">
+                    <span>{{ activeSheet?.name }}</span>
+                    <span class="text-white/50">·</span>
+                    <!-- Иконка зависит от статуса: спиннер, галочка или треугольник -->
+                    <template v-if="saveStatus === 'saving'">
+                        <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                            <path d="M12 2a10 10 0 0 1 10 10" />
+                        </svg>
+                        <span class="text-xs text-white/80">{{ saveStatusLabel }}</span>
+                    </template>
+                    <template v-else-if="saveStatus === 'error'">
+                        <svg class="w-3.5 h-3.5 text-red-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                            <line x1="12" y1="9" x2="12" y2="13" />
+                            <line x1="12" y1="17" x2="12.01" y2="17" />
+                        </svg>
+                        <span class="text-xs text-red-300">{{ saveStatusLabel }}</span>
+                    </template>
+                    <template v-else>
+                        <svg class="w-3.5 h-3.5 text-emerald-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        <span class="text-xs text-white/80">{{ saveStatusLabel }}</span>
+                    </template>
+                </div>
             </div>
             <div class="flex items-center gap-3">
                 <span v-if="!canEdit && activeSheet" class="bg-yellow-300/80 text-yellow-900 text-xs px-2 py-1 rounded font-semibold">
