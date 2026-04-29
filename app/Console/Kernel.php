@@ -15,7 +15,14 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        // Чистим старые записи журнала аудита раз в сутки (в 03:15 по серверу).
+        // Retention настраивается через AUDIT_LOG_RETENTION_DAYS в .env (по умолчанию 90).
+        // Чтобы это реально запускалось — нужен системный cron на проде:
+        //   * * * * * cd /var/www/excel && php artisan schedule:run >> /dev/null 2>&1
+        $schedule->command('audit-log:cleanup')
+                 ->dailyAt('03:15')
+                 ->onOneServer()
+                 ->withoutOverlapping();
     }
 
     /**
