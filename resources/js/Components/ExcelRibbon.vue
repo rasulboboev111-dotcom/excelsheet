@@ -509,12 +509,48 @@ const icons = {
 </template>
 
 <style scoped>
+/* === Дизайн-токены ленты === */
+:root {
+    --rb-bg:        #f8f7f5;
+    --rb-border:    #d2d0ce;
+    --rb-divider:   #c8c6c4;
+    --rb-hover:     #ececea;
+    --rb-press:     #dcdad8;
+    --rb-accent:    #2563eb;
+    --rb-accent-bg: rgba(37, 99, 235, 0.10);
+    --rb-accent-br: rgba(37, 99, 235, 0.35);
+    --rb-text:      #1f1e1d;
+    --rb-text-mute: #605e5c;
+    --rb-shadow:    0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Все кнопки ленты — общий «tactile» паттерн: tween 120ms, скруглённый угол,
+   нажатие проседает на 1px, focus-visible — синий ring для клавиатурных юзеров. */
+.excel-ribbon button {
+    border-radius: 4px;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+    color: var(--rb-text);
+}
+.excel-ribbon button:active:not(:disabled) {
+    transform: translateY(1px);
+}
+.excel-ribbon button:focus-visible {
+    outline: 2px solid var(--rb-accent);
+    outline-offset: 1px;
+    z-index: 1;
+}
+.excel-ribbon button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .excel-ribbon {
-    background: #f3f2f1;
-    border-bottom: 1px solid #d2d0ce;
+    background: var(--rb-bg);
+    border-bottom: 1px solid var(--rb-border);
     display: flex;
     flex-direction: column;
     z-index: 100;
+    box-shadow: var(--rb-shadow);
 }
 
 .ribbon-tabs {
@@ -525,20 +561,24 @@ const icons = {
 }
 
 .tab {
-    padding: 6px 14px;
+    padding: 6px 16px;
     font-size: 13px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
-    transition: all 0.1s;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
     display: flex;
     align-items: center;
+    color: var(--rb-text);
+    position: relative;
 }
-.tab:hover { background: #f3f2f1; }
-.tab.active { 
-    color: #2563eb; 
-    border-bottom: 3px solid #2563eb; 
-    font-weight: 600; 
-    background: #f3f2f1;
+.tab:hover { background: var(--rb-bg); color: var(--rb-accent); }
+.tab.active {
+    color: var(--rb-accent);
+    font-weight: 600;
+    background: var(--rb-bg);
+    /* Toolbar indicator: тонкая, но насыщенная линия снизу + лёгкий фон сверху */
+    box-shadow: inset 0 -3px 0 0 var(--rb-accent);
+    border-bottom-color: transparent;
 }
 .file-tab { 
     background: #185c37; 
@@ -576,15 +616,20 @@ const icons = {
 .ribbon-group {
     display: flex;
     flex-direction: column;
-    padding: 4px 10px;
-    border-right: 1px solid #e1dfdd;
+    padding: 4px 12px;
+    /* Разделитель не на всю высоту: оставляем 8px сверху/снизу — выглядит как
+       в современном Office, не давит. */
+    background-image: linear-gradient(to bottom, transparent 8px, var(--rb-divider) 8px, var(--rb-divider) calc(100% - 8px), transparent calc(100% - 8px));
+    background-size: 1px 100%;
+    background-position: right;
+    background-repeat: no-repeat;
     min-width: fit-content;
     align-items: center;
     position: relative;
 }
 
 .ribbon-group:last-child {
-    border-right: none;
+    background-image: none;
 }
 
 .group-inner {
@@ -596,50 +641,59 @@ const icons = {
 }
 
 .group-label {
-    font-size: 10px;
-    color: #828282;
+    font-size: 9px;
+    color: var(--rb-text-mute);
     text-align: center;
     margin-top: auto;
-    padding-bottom: 2px;
+    padding-bottom: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
 }
 
 .btn-large {
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 60px;
-    height: 72px;
+    justify-content: center;
+    gap: 4px;
+    width: 64px;
+    height: 76px;
     background: transparent;
     border: 1px solid transparent;
     cursor: pointer;
     font-size: 11px;
+    padding: 4px;
 }
-.btn-large:hover { background: #edebe9; border-color: #d2d0ce; }
+.btn-large:hover { background: var(--rb-hover); border-color: var(--rb-border); }
+.btn-large:active:not(:disabled) { background: var(--rb-press); }
 
-.btn-mini { 
-    background: transparent; border: 1px solid transparent; 
-    text-align: left; font-size: 11px; padding: 1px 4px; cursor: pointer;
-    display: flex; align-items: center; gap: 4px; white-space: nowrap;
+.btn-mini {
+    background: transparent; border: 1px solid transparent;
+    text-align: left; font-size: 11px; padding: 2px 6px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+    line-height: 1.4;
 }
-.btn-mini:hover { background: #edebe9; }
+.btn-mini:hover { background: var(--rb-hover); }
+.btn-mini:active:not(:disabled) { background: var(--rb-press); }
 
 .btn-medium {
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 60px;
-    height: 72px;
+    justify-content: center;
+    gap: 4px;
+    width: 64px;
+    height: 76px;
     background: transparent;
     border: 1px solid transparent;
     cursor: pointer;
     font-size: 11px;
-    color: #333;
-    padding-top: 4px;
+    color: var(--rb-text);
+    padding: 4px;
 }
-
-.btn-medium:hover {
-    background: #edebe9;
-}
+.btn-medium:hover { background: var(--rb-hover); border-color: var(--rb-border); }
+.btn-medium:active:not(:disabled) { background: var(--rb-press); }
 
 .icon-m {
     margin-bottom: 4px;
@@ -652,13 +706,25 @@ const icons = {
 }
 
 .btn-tool {
-    min-width: 24px; height: 22px;
+    min-width: 26px; height: 24px;
+    padding: 0 4px;
     background: transparent; border: 1px solid transparent;
     cursor: pointer; font-size: 12px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
-.btn-tool:hover { background: #edebe9; border-color: #d2d0ce; }
-.btn-tool.active { background: #d2d0ce; }
+.btn-tool:hover { background: var(--rb-hover); border-color: var(--rb-border); }
+.btn-tool:active:not(:disabled) { background: var(--rb-press); }
+/* Активное состояние — синий акцент, как в Office. Заметнее чем серый. */
+.btn-tool.active {
+    background: var(--rb-accent-bg);
+    border-color: var(--rb-accent-br);
+    color: var(--rb-accent);
+    font-weight: 600;
+}
+.btn-tool.active:hover {
+    background: rgba(37, 99, 235, 0.16);
+    border-color: var(--rb-accent);
+}
 
 .row {
     display: flex;
@@ -666,8 +732,25 @@ const icons = {
     gap: 2px;
 }
 
-.font-select { width: 100px; font-size: 11px; height: 22px; }
-.size-select { width: 42px; font-size: 11px; height: 22px; }
+.font-select, .size-select {
+    font-size: 11px;
+    height: 24px;
+    padding: 0 6px;
+    border: 1px solid var(--rb-border);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--rb-text);
+    cursor: pointer;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.font-select { width: 110px; }
+.size-select { width: 48px; }
+.font-select:hover, .size-select:hover { border-color: #a19f9d; }
+.font-select:focus, .size-select:focus {
+    outline: none;
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 2px var(--rb-accent-bg);
+}
 
 .btn-text-action {
     font-size: 10px;
@@ -699,20 +782,21 @@ const icons = {
 .icon-c.delete::after { content: '×'; color: red; font-weight: bold; position: absolute; top: -2px; left: 6px; font-size: 18px; }
 .icon-c.format { background: #fff; border: 1px solid #0078d4; }
 
-.btn-cell { 
+.btn-cell {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 10px; 
-    width: 60px; 
-    height: 60px;
-    background: transparent; 
-    border: 1px solid transparent; 
-    cursor: pointer; 
+    font-size: 10px;
+    width: 64px;
+    height: 64px;
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
     gap: 4px;
 }
-.btn-cell:hover { background: #edebe9; }
+.btn-cell:hover { background: var(--rb-hover); border-color: var(--rb-border); }
+.btn-cell:active:not(:disabled) { background: var(--rb-press); }
 .btn-cell span { line-height: 1; }
 
 .btn-style {
@@ -728,11 +812,17 @@ const icons = {
     cursor: pointer;
     gap: 4px;
 }
-.btn-style:hover { background: #edebe9; }
+.btn-style:hover { background: var(--rb-hover); border-color: var(--rb-border); }
+.btn-style:active:not(:disabled) { background: var(--rb-press); }
 .btn-style span { line-height: 1.1; text-align: center; }
 
-.btn-edit { font-size: 11px; display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: transparent; border: 1px solid transparent; cursor: pointer; width: 100%; }
-.btn-edit:hover { background: #edebe9; }
+.btn-edit {
+    font-size: 11px; display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px; background: transparent; border: 1px solid transparent;
+    cursor: pointer; width: 100%;
+}
+.btn-edit:hover { background: var(--rb-hover); }
+.btn-edit:active:not(:disabled) { background: var(--rb-press); }
 
 .number-stack {
     display: flex;

@@ -944,32 +944,56 @@ const finalColumnDefs = computed(() => {
 /* === EXCEL-LIKE THEME === */
 .ag-theme-balham {
     --ag-selected-row-background-color: transparent !important;
-    --ag-header-background-color: #f3f3f3;
-    --ag-header-foreground-color: #444;
-    --ag-border-color: #d4d4d4;
-    --ag-row-border-color: #d4d4d4;
-    --ag-cell-horizontal-border: solid 1px #d4d4d4;
-    --ag-grid-size: 2px;
-    --ag-font-size: 11px;
-    --ag-font-family: Calibri, 'Segoe UI', Tahoma, sans-serif;
-    --ag-row-hover-color: rgba(0, 0, 0, 0.02);
+    --ag-header-background-color: #f8f9fa;
+    --ag-header-foreground-color: #374151;
+    --ag-border-color: #e5e7eb;
+    --ag-row-border-color: #e5e7eb;
+    --ag-cell-horizontal-border: solid 1px #e5e7eb;
+    --ag-grid-size: 3px;
+    --ag-font-size: 12px;
+    --ag-font-family: 'Segoe UI', -apple-system, system-ui, 'Calibri', sans-serif;
+    /* Hover — едва заметный синий tint, чтобы не отвлекал но был виден */
+    --ag-row-hover-color: rgba(37, 99, 235, 0.04);
     user-select: none;
     background: #fff;
 }
 
-/* Excel column header — clean grey */
+/* Modern thin scrollbars — Webkit */
+.ag-theme-balham .ag-body-viewport::-webkit-scrollbar,
+.ag-theme-balham .ag-body-horizontal-scroll-viewport::-webkit-scrollbar,
+.ag-theme-balham .ag-virtual-list-viewport::-webkit-scrollbar { width: 10px; height: 10px; }
+.ag-theme-balham .ag-body-viewport::-webkit-scrollbar-track,
+.ag-theme-balham .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-track,
+.ag-theme-balham .ag-virtual-list-viewport::-webkit-scrollbar-track { background: transparent; }
+.ag-theme-balham .ag-body-viewport::-webkit-scrollbar-thumb,
+.ag-theme-balham .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb,
+.ag-theme-balham .ag-virtual-list-viewport::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.ag-theme-balham .ag-body-viewport::-webkit-scrollbar-thumb:hover,
+.ag-theme-balham .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb:hover,
+.ag-theme-balham .ag-virtual-list-viewport::-webkit-scrollbar-thumb:hover { background: #9ca3af; background-clip: padding-box; }
+
+/* Excel column header — мягкий нейтральный фон */
 .ag-theme-balham .ag-header {
-    border-bottom: 1px solid #d4d4d4;
-    background: #f3f3f3;
+    border-bottom: 1px solid #d1d5db;
+    background: #f8f9fa;
+    /* Тонкая тень снизу — отделяет хедер от тела */
+    box-shadow: 0 1px 0 0 rgba(0, 0, 0, 0.03);
 }
 .ag-theme-balham .ag-header-cell {
-    border-right: 1px solid #d4d4d4;
-    font-weight: 400;
-    color: #444;
+    border-right: 1px solid #e5e7eb;
+    font-weight: 500;
+    color: #374151;
     cursor: pointer;
+    transition: background-color 120ms ease;
 }
 .ag-theme-balham .ag-header-cell:hover {
-    background: #e8e8e8;
+    background: #eef2ff;
+    color: #2563eb;
 }
 
 /* Selected column header — green underline like real Excel */
@@ -981,9 +1005,9 @@ const finalColumnDefs = computed(() => {
     box-shadow: inset 0 -2px 0 0 #2563eb;
 }
 
-/* Selection range — Excel light-green tint */
+/* Selection range — мягкий синий tint (унифицирован с акцентом) */
 .ag-theme-balham .excel-range-selected {
-    background-color: rgba(16, 124, 65, 0.06) !important;
+    background-color: rgba(37, 99, 235, 0.07) !important;
     z-index: 2 !important;
 }
 .ag-theme-balham .excel-range-top    { border-top:    2px solid #2563eb !important; }
@@ -991,41 +1015,50 @@ const finalColumnDefs = computed(() => {
 .ag-theme-balham .excel-range-left   { border-left:   2px solid #2563eb !important; }
 .ag-theme-balham .excel-range-right  { border-right:  2px solid #2563eb !important; }
 
-/* Fill handle — small green square in bottom-right of selection */
+/* Fill handle — синий квадратик в правом нижнем углу выделения, чуть приподнятый */
 .ag-theme-balham .excel-range-corner::after {
     content: '';
     position: absolute;
     bottom: -4px;
     right: -4px;
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     background-color: #2563eb;
-    border: 1.5px solid white;
+    border: 2px solid white;
+    border-radius: 1px;
     z-index: 100;
     cursor: crosshair;
-    box-shadow: 0 0 1px rgba(0,0,0,0.4);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 120ms ease;
+}
+.ag-theme-balham .excel-range-corner:hover::after {
+    transform: scale(1.25);
 }
 
-/* Active cell — Excel deep green border, white inside */
+/* Active cell — синяя рамка с лёгкой тенью для глубины */
 .ag-theme-balham .ag-cell-focus,
 .ag-theme-balham .excel-active-cell {
     border: 2px solid #2563eb !important;
     outline: none !important;
     background-color: white !important;
     z-index: 6 !important;
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15), 0 2px 4px rgba(37, 99, 235, 0.12);
 }
 
-/* Row number column (the grey strip on the left) */
+/* Row number column (нумерация строк слева) */
 .ag-theme-balham .excel-row-number-cell {
-    background-color: #f3f3f3 !important;
-    border-right: 1px solid #d4d4d4 !important;
+    background-color: #f8f9fa !important;
+    border-right: 1px solid #d1d5db !important;
     text-align: center;
-    color: #444;
+    color: #6b7280;
     cursor: pointer;
     font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    transition: background-color 120ms ease, color 120ms ease;
 }
 .ag-theme-balham .excel-row-number-cell:hover {
-    background-color: #e8e8e8 !important;
+    background-color: #eef2ff !important;
+    color: #2563eb;
 }
 .ag-theme-balham .ag-cell.excel-header-highlight.excel-row-number-cell {
     background-color: #dbeafe !important;
@@ -1034,17 +1067,23 @@ const finalColumnDefs = computed(() => {
     box-shadow: inset -2px 0 0 0 #2563eb;
 }
 
-/* Cells: thinner border + Excel default left-align for text, right-align for numbers handled inline */
+/* Cells — мягкие границы, удобная высота строки */
 .ag-theme-balham .ag-cell {
-    border-right: 1px solid #d4d4d4;
-    border-bottom: 1px solid #d4d4d4;
-    line-height: 1.3;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
+    line-height: 1.4;
+    padding: 0 6px;
 }
 
-/* Pinned-top row (frozen first row) — slight shadow under it */
+/* Pinned-top row (закреплённая шапка) — заметная тень + насыщенная нижняя граница */
 .ag-theme-balham .ag-floating-top {
-    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-    border-bottom: 1px solid #b8b8b8;
+    box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.08);
+    border-bottom: 2px solid #2563eb;
+    background: #fafbff;
+}
+/* Закреплённая строка визуально отличается — лёгкий синий tint */
+.ag-theme-balham .ag-floating-top .ag-row {
+    background: #fafbff !important;
 }
 
 /* === Row resize handle === */
@@ -1065,9 +1104,39 @@ const finalColumnDefs = computed(() => {
     height: 4px;
     cursor: row-resize;
     z-index: 10;
+    transition: background-color 120ms ease;
 }
 .excel-row-resize-handle:hover {
     background-color: #2563eb;
+}
+
+/* Cell editing state — синий ободок с белым фоном + glow */
+.ag-theme-balham .ag-cell-inline-editing {
+    border: 2px solid #2563eb !important;
+    background: #fff !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18), 0 2px 6px rgba(37, 99, 235, 0.15) !important;
+    border-radius: 2px;
+    z-index: 7 !important;
+    height: auto !important;
+}
+.ag-theme-balham .ag-cell-inline-editing input {
+    height: 100% !important;
+    padding: 0 6px !important;
+    font-size: 12px !important;
+    border: none !important;
+    outline: none !important;
+    background: transparent !important;
+    color: #111827;
+}
+
+/* Плавный hover на строки */
+.ag-theme-balham .ag-row {
+    transition: background-color 120ms ease;
+}
+
+/* Корнеры таблицы — закруглить чуть-чуть */
+.ag-theme-balham {
+    border-radius: 0;
 }
 
 /* === Filter UX (modern / non-Excel) ============================ */
