@@ -222,7 +222,6 @@ const icons = {
                         <button class="btn-mini" @click="handleAction('formatPainter')"><span v-html="icons.brush"></span> Формат по образцу</button>
                     </div>
                 </div>
-                <div class="group-label">Буфер обмена</div>
             </div>
 
             <!-- Группа: Шрифт -->
@@ -452,7 +451,6 @@ const icons = {
                         </div>
                     </div>
                 </div>
-                <div class="group-label">Ячейки</div>
             </div>
 
             <!-- Группа: Редактирование -->

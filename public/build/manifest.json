@@ -175,18 +175,18 @@
     "src": "resources/js/Pages/Auth/VerifyEmail.vue"
   },
   "resources/js/Pages/Dashboard.css": {
-    "file": "assets/Dashboard-52cea136.css",
+    "file": "assets/Dashboard-03f3e7fd.css",
     "src": "resources/js/Pages/Dashboard.css"
   },
   "resources/js/Pages/Dashboard.vue": {
     "css": [
-      "assets/Dashboard-52cea136.css"
+      "assets/Dashboard-03f3e7fd.css"
     ],
     "dynamicImports": [
       "_exceljs-4454f5ce.js",
       "_exceljs-4454f5ce.js"
     ],
-    "file": "assets/Dashboard-c8dccb39.js",
+    "file": "assets/Dashboard-e39ed904.js",
     "imports": [
       "_ag-grid-0f68da92.js",
       "_inertia-17b299c0.js",
@@ -305,7 +305,7 @@
       "resources/js/Pages/Users/Index.vue",
       "resources/js/Pages/Welcome.vue"
     ],
-    "file": "assets/app-0bafcc91.js",
+    "file": "assets/app-8322545c.js",
     "imports": [
       "_lodash-b5e5e8b8.js",
       "_exceljs-4454f5ce.js",
