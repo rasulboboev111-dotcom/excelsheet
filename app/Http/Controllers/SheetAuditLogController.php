@@ -67,7 +67,32 @@ class SheetAuditLogController extends Controller
                 'sheet_imported' => 'Импорт листа',
                 'row_inserted'   => 'Вставка строки',
                 'row_deleted'    => 'Удаление строки',
+                'audit_cleared'  => 'Очистка журнала',
             ],
         ]);
+    }
+
+    /**
+     * Полная очистка журнала. Только админ. После очистки сразу пишем
+     * запись «audit_cleared» с количеством удалённых записей и автором —
+     * чтобы следующий админ видел, что журнал не пуст «случайно».
+     */
+    public function clear()
+    {
+        $this->authorizeAdmin();
+
+        $count = SheetAuditLog::count();
+        SheetAuditLog::truncate();
+
+        // Лог пишем СРАЗУ после truncate — это первая запись в чистом журнале.
+        SheetAuditLog::create([
+            'user_id' => Auth::id(),
+            'sheet_id' => null,
+            'action' => 'audit_cleared',
+            'details' => ['removed_entries' => $count],
+            'ip' => request()->ip(),
+        ]);
+
+        return back();
     }
 }

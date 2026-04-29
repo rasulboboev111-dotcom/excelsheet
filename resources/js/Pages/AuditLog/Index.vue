@@ -30,6 +30,19 @@ const resetFilters = () => {
     router.get(route('audit-log.index'), {}, { preserveState: true });
 };
 
+const clearAudit = () => {
+    const total = props.logs?.total ?? 0;
+    if (total === 0) {
+        alert('Журнал уже пуст.');
+        return;
+    }
+    if (!confirm(`Удалить ВСЕ записи журнала (${total} шт.)? Действие необратимо.\n\nПервой записью в чистом журнале появится «Очистка журнала» с вашим именем — чтобы был след.`)) return;
+    router.delete(route('audit-log.clear'), {
+        preserveScroll: true,
+        onSuccess: () => { /* Inertia сама перезагрузит данные */ },
+    });
+};
+
 const formatDateTime = (s) => {
     if (!s) return '';
     try {
@@ -44,6 +57,7 @@ const actionBadgeClass = (key) => {
     if (key === 'sheet_deleted' || key === 'row_deleted') return 'bg-red-100 text-red-700';
     if (key === 'sheet_created' || key === 'sheet_imported' || key === 'row_inserted') return 'bg-green-100 text-green-700';
     if (key === 'sheet_renamed') return 'bg-yellow-100 text-yellow-700';
+    if (key === 'audit_cleared') return 'bg-purple-100 text-purple-700';
     return 'bg-blue-100 text-blue-700';
 };
 
@@ -62,6 +76,7 @@ const detailsSummary = (log) => {
     if (log.action === 'sheet_created')  return `«${d.name ?? '?'}»`;
     if (log.action === 'sheet_imported') return `«${d.name ?? '?'}» · строк: ${d.rows_count ?? 0} · колонок: ${d.columns_count ?? 0}`;
     if (log.action === 'row_inserted' || log.action === 'row_deleted') return `строка ${(d.row_index ?? 0) + 1}`;
+    if (log.action === 'audit_cleared') return `удалено записей: ${d.removed_entries ?? '?'}`;
     // cell_edit — рендерится отдельным компонентом-таблицей, см. шаблон.
     return null;
 };
@@ -92,7 +107,22 @@ const paginationLabel = (raw) => {
     <Head title="Журнал аудита" />
     <AuthenticatedLayout>
         <template #header>
-            <h2 class="font-semibold text-xl text-gray-800 leading-tight">Журнал действий</h2>
+            <div class="flex items-center justify-between">
+                <h2 class="font-semibold text-xl text-gray-800 leading-tight">Журнал действий</h2>
+                <button @click="clearAudit"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-red-300 text-red-700 bg-white hover:bg-red-50 transition-colors"
+                        :disabled="(logs?.total ?? 0) === 0"
+                        :class="{ 'opacity-50 cursor-not-allowed': (logs?.total ?? 0) === 0 }"
+                        :title="(logs?.total ?? 0) === 0 ? 'Журнал уже пуст' : 'Удалить все записи журнала'">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6l-1.18 14.13A2 2 0 0 1 15.83 22H8.17a2 2 0 0 1-1.99-1.87L5 6"/>
+                        <path d="M10 11v6M14 11v6"/>
+                        <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                    Очистить журнал
+                </button>
+            </div>
         </template>
 
         <div class="py-8">

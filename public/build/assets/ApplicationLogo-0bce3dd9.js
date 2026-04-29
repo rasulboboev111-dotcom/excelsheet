@@ -1,0 +1,1 @@
+import{_ as o}from"./_plugin-vue_export-helper-c27b6911.js";import{o as e,f as t}from"./ag-grid-0f68da92.js";const c={},r={src:"/img/tojiktelecom-logo.svg",alt:"Tojiktelecom"};function s(n,i){return e(),t("img",r)}const a=o(c,[["render",s]]);export{a as A};

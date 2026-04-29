@@ -59,6 +59,7 @@ Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
 
     Route::get('/audit-log', [SheetAuditLogController::class, 'index'])->name('audit-log.index');
+    Route::delete('/audit-log', [SheetAuditLogController::class, 'clear'])->name('audit-log.clear');
 });
 
 Route::middleware('auth')->group(function () {
