@@ -17,6 +17,14 @@ class SheetController extends Controller
     private const MAX_IMPORT_COLS = 1000;
     private const MAX_UPDATE_ROWS = 50000;
     private const MAX_ROW_INDEX = 1048576;
+    // Ограничение на количество diff-записей, которые держим в памяти ПЕРЕД срезом для лога.
+    // Реальный счётчик cells_changed считается отдельно и не зависит от лимита.
+    private const AUDIT_SAMPLE_LIMIT = 1000;
+    // Смещение для двухшагового сдвига row_index в insert/deleteRow. Должно быть строго
+    // БОЛЬШЕ MAX_ROW_INDEX, чтобы временные значения гарантированно не пересекались
+    // с реальными. UNIQUE-проверка проходит, потому что промежуточные строки находятся
+    // в недостижимом диапазоне.
+    private const SHIFT_OFFSET = 100000000; // ~95× больше MAX_ROW_INDEX
 
     /**
      * Уникальный 64-битный ключ для pg_advisory_xact_lock — сериализует выдачу
@@ -225,7 +233,15 @@ class SheetController extends Controller
             ->get()
             ->keyBy('row_index');
 
+        // Diff-аккумуляторы: total — реальный счётчик (всё, что изменилось),
+        // sample — capped массив для лога (чтобы при 50k правок не сожрать всю память).
+        $totalChanges = 0;
         $changes = []; // [{ row, col, col_name, old, new }, …]
+        $sampleLimit = self::AUDIT_SAMPLE_LIMIT;
+
+        // Соберём пачку для upsert — один SQL вместо N updateOrCreate.
+        $upsertRows = [];
+        $now = now();
 
         foreach ($payload['rows'] as $row) {
             $rowIndex = (int) $row['row_index'];
@@ -258,27 +274,46 @@ class SheetController extends Controller
                 $newVal = $clean[$field] ?? null;
                 // Нормализуем перед сравнением: "5" === 5, "" === null и т.п.
                 if ($this->normalizeCellValue($oldVal) === $this->normalizeCellValue($newVal)) continue;
-                $changes[] = [
-                    'row'      => $rowIndex + 1, // человеко-читаемая нумерация с 1
-                    'col'      => $field,
-                    'col_name' => $columnsMap[$field] ?? $field,
-                    'old'      => $oldVal,
-                    'new'      => $newVal,
-                ];
+                $totalChanges++;
+                if (count($changes) < $sampleLimit) {
+                    $changes[] = [
+                        'row'      => $rowIndex + 1, // человеко-читаемая нумерация с 1
+                        'col'      => $field,
+                        'col_name' => $columnsMap[$field] ?? $field,
+                        'old'      => $oldVal,
+                        'new'      => $newVal,
+                    ];
+                }
             }
 
-            SheetData::updateOrCreate(
-                ['sheet_id' => $sheet->id, 'row_index' => $rowIndex],
-                ['row_data' => $clean]
+            // upsert работает в обход Eloquent: cast 'array' на row_data НЕ применяется,
+            // нужен явный json_encode. Также upsert не ставит created_at/updated_at сам.
+            $upsertRows[] = [
+                'sheet_id'   => $sheet->id,
+                'row_index'  => $rowIndex,
+                'row_data'   => json_encode($clean, JSON_UNESCAPED_UNICODE),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        if (!empty($upsertRows)) {
+            // Один SQL вместо N. Conflict-key совпадает с UNIQUE(sheet_id, row_index).
+            // На вставке заполняются created_at/updated_at; на конфликте — обновляются row_data
+            // и updated_at (created_at не трогаем).
+            SheetData::upsert(
+                $upsertRows,
+                ['sheet_id', 'row_index'],
+                ['row_data', 'updated_at']
             );
         }
 
         // Лог пишем ТОЛЬКО если реально менялось хоть одно значение.
         // Стилевые правки (жирный/цвет) в журнал не попадают — это шум.
-        if (!empty($changes)) {
+        if ($totalChanges > 0) {
             $this->logAudit('cell_edit', $sheet->id, [
-                'cells_changed' => count($changes),
-                'sample'        => array_slice($changes, 0, 20),
+                'cells_changed' => $totalChanges,                  // реальное число (не из обрезанного sample)
+                'sample'        => array_slice($changes, 0, 20),    // первые 20 для UI журнала
             ]);
         }
 
@@ -427,19 +462,44 @@ class SheetController extends Controller
             'row_index' => 'required|integer|min:0|max:' . self::MAX_ROW_INDEX,
         ])['row_index'];
 
-        // Сдвигаем все строки ниже на одну позицию вниз
-        SheetData::where('sheet_id', $sheet->id)
-            ->where('row_index', '>=', $rowIndex)
-            ->increment('row_index');
+        // Concurrent insert/delete на одном листе раньше могли получить дубль row_index
+        // или пропуски. Транзакция + явный SELECT FOR UPDATE по затрагиваемому диапазону
+        // сериализует параллельные операции. ВАЖНО: lockForUpdate() влияет ТОЛЬКО на
+        // SELECT-запрос, поэтому нужен явный ->get() ПЕРЕД increment'ом — иначе
+        // ->lockForUpdate()->increment() это no-op (UPDATE-команда без FOR UPDATE).
+        $affected = DB::transaction(function () use ($sheet, $rowIndex) {
+            // 1. Берём блокировку на строки, которые сейчас сдвинем (SELECT FOR UPDATE,
+            // явный get() — без него lockForUpdate не сработает на UPDATE-командах).
+            SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>=', $rowIndex)
+                ->lockForUpdate()
+                ->get(['id']);
 
-        // Создаем новую пустую строку на освободившемся месте
-        SheetData::create([
-            'sheet_id' => $sheet->id,
-            'row_index' => $rowIndex,
-            'row_data' => []
+            // 2. PG проверяет UNIQUE построчно. Прямой increment'нул бы
+            // промежуточное состояние с дублями. Поэтому сдвигаем в два шага:
+            // 2.1 Уносим row_index в недостижимый диапазон (+SHIFT_OFFSET).
+            $shifted = SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>=', $rowIndex)
+                ->increment('row_index', self::SHIFT_OFFSET + 1);
+            // 2.2 Возвращаем со сдвигом на 1 (т.е. конечное смещение = +1).
+            SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>=', self::SHIFT_OFFSET + 1)
+                ->decrement('row_index', self::SHIFT_OFFSET);
+
+            // 3. Вставляем новую пустую строку — слот rowIndex теперь свободен.
+            SheetData::create([
+                'sheet_id'  => $sheet->id,
+                'row_index' => $rowIndex,
+                'row_data'  => [],
+            ]);
+
+            return $shifted;
+        });
+
+        $this->logAudit('row_inserted', $sheet->id, [
+            'row_index'    => $rowIndex,
+            'shifted_rows' => $affected, // сколько строк сдвинулось вниз
         ]);
-
-        $this->logAudit('row_inserted', $sheet->id, ['row_index' => $rowIndex]);
 
         return back();
     }
@@ -452,17 +512,34 @@ class SheetController extends Controller
             'row_index' => 'required|integer|min:0|max:' . self::MAX_ROW_INDEX,
         ])['row_index'];
 
-        // Удаляем целевую строку
-        SheetData::where('sheet_id', $sheet->id)
-            ->where('row_index', $rowIndex)
-            ->delete();
+        $result = DB::transaction(function () use ($sheet, $rowIndex) {
+            // Лочим целевую + всё, что ниже (их сдвинем). SELECT FOR UPDATE.
+            SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>=', $rowIndex)
+                ->lockForUpdate()
+                ->get(['id']);
 
-        // Сдвигаем все строки ниже на одну позицию вверх
-        SheetData::where('sheet_id', $sheet->id)
-            ->where('row_index', '>', $rowIndex)
-            ->decrement('row_index');
+            // Удаляем строку — слот освобождается.
+            $deleted = SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', $rowIndex)
+                ->delete();
 
-        $this->logAudit('row_deleted', $sheet->id, ['row_index' => $rowIndex]);
+            // Сдвиг наверх через тот же offset-трюк (см. insertRow).
+            $shifted = SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>', $rowIndex)
+                ->increment('row_index', self::SHIFT_OFFSET - 1);
+            SheetData::where('sheet_id', $sheet->id)
+                ->where('row_index', '>=', self::SHIFT_OFFSET)
+                ->decrement('row_index', self::SHIFT_OFFSET);
+
+            return ['deleted' => $deleted, 'shifted' => $shifted];
+        });
+
+        $this->logAudit('row_deleted', $sheet->id, [
+            'row_index'    => $rowIndex,
+            'deleted'      => $result['deleted'], // 0 или 1 — была ли там запись
+            'shifted_rows' => $result['shifted'], // сколько строк подняли наверх
+        ]);
 
         return back();
     }
