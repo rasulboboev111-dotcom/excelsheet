@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Sheet;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,7 +21,7 @@ class UserController extends Controller
                     'id'         => $u->id,
                     'name'       => $u->name,
                     'email'      => $u->email,
-                    'is_admin'   => $u->hasRole('admin'),
+                    'is_admin'   => Sheet::userIsAdmin($u),
                     'created_at' => $u->created_at?->toDateTimeString(),
                 ];
             });
@@ -47,7 +48,7 @@ class UserController extends Controller
         ]);
 
         if (!empty($payload['is_admin'])) {
-            $user->assignRole('admin');
+            Sheet::makeUserAdmin($user);
         }
 
         return redirect()->route('users.index');
@@ -73,10 +74,11 @@ class UserController extends Controller
         // иначе можно случайно остаться без админа в системе.
         $wantsAdmin = !empty($payload['is_admin']);
         $isSelf = (int) $user->id === (int) Auth::id();
-        if ($wantsAdmin && !$user->hasRole('admin')) {
-            $user->assignRole('admin');
-        } elseif (!$wantsAdmin && $user->hasRole('admin') && !$isSelf) {
-            $user->removeRole('admin');
+        $isAdmin = Sheet::userIsAdmin($user);
+        if ($wantsAdmin && !$isAdmin) {
+            Sheet::makeUserAdmin($user);
+        } elseif (!$wantsAdmin && $isAdmin && !$isSelf) {
+            Sheet::removeUserAdmin($user);
         }
 
         return redirect()->route('users.index');

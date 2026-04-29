@@ -14,7 +14,7 @@ class SheetPermissionController extends Controller
     private function authorizeAdmin(): void
     {
         $user = Auth::user();
-        if (!$user || !$user->hasRole('admin')) {
+        if (!$user || !Sheet::userIsAdmin($user)) {
             throw new AuthorizationException('Admin only.');
         }
     }
@@ -23,18 +23,20 @@ class SheetPermissionController extends Controller
     {
         $this->authorizeAdmin();
 
+        // Не показываем админов в списке — у них и так полный доступ.
+        $allUsers = User::orderBy('name')
+            ->get(['id', 'name', 'email'])
+            ->reject(fn (User $u) => Sheet::userIsAdmin($u))
+            ->values();
+
+        $assignedUsers = $sheet->assignedUsers()->map(fn ($r) => [
+            'id'   => (int) $r->id,
+            'role' => $r->role,
+        ]);
+
         return [
-            // Не показываем админов в списке — у них и так полный доступ.
-            'allUsers' => User::orderBy('name')
-                ->get(['id', 'name', 'email'])
-                ->reject(fn ($u) => $u->hasRole('admin'))
-                ->values(),
-            'assignedUsers' => $sheet->users()->get()->map(function($user) {
-                return [
-                    'id' => $user->id,
-                    'role' => $user->pivot->role
-                ];
-            })
+            'allUsers'      => $allUsers,
+            'assignedUsers' => $assignedUsers,
         ];
     }
 
@@ -47,19 +49,13 @@ class SheetPermissionController extends Controller
             'role'    => 'required|string|in:none,viewer,editor',
         ]);
 
-        // Не назначаем роль самому админу через этот эндпоинт — у него и так всё.
+        // Не назначаем роль самому админу — у него и так всё.
         $target = User::find($payload['user_id']);
-        if ($target && $target->hasRole('admin')) {
+        if ($target && Sheet::userIsAdmin($target)) {
             throw new AuthorizationException('Cannot assign sheet role to an admin (they already have full access).');
         }
 
-        if ($payload['role'] === 'none') {
-            $sheet->users()->detach($payload['user_id']);
-        } else {
-            $sheet->users()->syncWithoutDetaching([
-                $payload['user_id'] => ['role' => $payload['role']],
-            ]);
-        }
+        $sheet->setUserRole((int) $payload['user_id'], $payload['role']);
 
         return back();
     }
@@ -81,19 +77,13 @@ class SheetPermissionController extends Controller
         ]);
 
         $target = User::find($payload['user_id']);
-        if ($target && $target->hasRole('admin')) {
+        if ($target && Sheet::userIsAdmin($target)) {
             throw new AuthorizationException('Cannot assign sheet role to an admin.');
         }
 
         $sheets = Sheet::whereIn('id', $payload['sheet_ids'])->get();
         foreach ($sheets as $sheet) {
-            if ($payload['role'] === 'none') {
-                $sheet->users()->detach($payload['user_id']);
-            } else {
-                $sheet->users()->syncWithoutDetaching([
-                    $payload['user_id'] => ['role' => $payload['role']],
-                ]);
-            }
+            $sheet->setUserRole((int) $payload['user_id'], $payload['role']);
         }
 
         return response()->json(['updated' => $sheets->count()]);

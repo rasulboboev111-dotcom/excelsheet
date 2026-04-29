@@ -20,11 +20,6 @@ class User extends Authenticatable
         'password',
     ];
 
-    public function sheets()
-    {
-        return $this->belongsToMany(Sheet::class, 'sheet_user')->withPivot('role')->withTimestamps();
-    }
-
     /**
      * The attributes that should be hidden for serialization.
      *

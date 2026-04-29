@@ -15,7 +15,7 @@ class SheetAuditLogController extends Controller
     private function authorizeAdmin(): void
     {
         $user = Auth::user();
-        if (!$user || !$user->hasRole('admin')) {
+        if (!$user || !Sheet::userIsAdmin($user)) {
             throw new AuthorizationException('Admin only.');
         }
     }

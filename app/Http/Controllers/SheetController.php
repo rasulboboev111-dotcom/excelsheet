@@ -92,7 +92,7 @@ class SheetController extends Controller
     private function authorizeAdmin(): void
     {
         $user = Auth::user();
-        if (!$user || !$user->hasRole('admin')) {
+        if (!$user || !Sheet::userIsAdmin($user)) {
             throw new AuthorizationException('Admin only.');
         }
     }
@@ -100,16 +100,29 @@ class SheetController extends Controller
     public function index(Request $request)
     {
         $userId = Auth::id();
-        $isAdmin = Auth::user()?->hasRole('admin') ?? false;
+        $authUser = Auth::user();
+        $isAdmin = $authUser ? Sheet::userIsAdmin($authUser) : false;
 
         // Админ видит все листы; обычный юзер — свои (owner) + те, где ему дали роль.
+        // Per-sheet роли хранятся в model_has_roles с team_id = sheet_id.
         if ($isAdmin) {
             $sheets = Sheet::with('owner:id,name,email')->orderBy('order')->get();
         } else {
+            $tableNames  = config('permission.table_names');
+            $columnNames = config('permission.column_names');
+            $teamFk      = $columnNames['team_foreign_key'] ?? 'team_id';
+            $modelKey    = $columnNames['model_morph_key']  ?? 'model_id';
+
+            $assignedSheetIds = \DB::table($tableNames['model_has_roles'])
+                ->where($modelKey, $userId)
+                ->where('model_type', \App\Models\User::class)
+                ->whereNotNull($teamFk)
+                ->pluck($teamFk);
+
             $sheets = Sheet::with('owner:id,name,email')
-                ->where(function ($q) use ($userId) {
+                ->where(function ($q) use ($userId, $assignedSheetIds) {
                     $q->where('user_id', $userId)
-                      ->orWhereHas('users', fn ($u) => $u->where('users.id', $userId));
+                      ->orWhereIn('id', $assignedSheetIds);
                 })
                 ->orderBy('order')->get();
         }
@@ -122,7 +135,7 @@ class SheetController extends Controller
         $canViewActive = false;
 
         if ($activeSheetId) {
-            $activeSheet = Sheet::with(['users', 'owner:id,name,email'])->find($activeSheetId);
+            $activeSheet = Sheet::with('owner:id,name,email')->find($activeSheetId);
             if ($activeSheet && $activeSheet->canView($userId)) {
                 $canViewActive = true;
                 $canEditActive = $activeSheet->canEdit($userId);
@@ -380,6 +393,9 @@ class SheetController extends Controller
             'name' => $sheetName,
         ]);
 
+        // team_id в model_has_roles — это просто колонка (не FK с cascade),
+        // поэтому per-sheet ролевые назначения чистим вручную перед delete.
+        $sheet->detachAllAssignments();
         $sheet->delete();
         return redirect()->route('dashboard');
     }

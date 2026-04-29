@@ -1391,6 +1391,104 @@ const openTabContextMenu = (event, sheet) => {
 const closeContextMenu = () => { tabContextMenu.value.show = false; };
 const deleteSheet = (sheet) => { if (confirm(`Удалить лист "${sheet.name}"?`)) router.delete(route('sheets.destroy', sheet.id)); closeContextMenu(); };
 
+// === Инлайн-попап «Права доступа» рядом с вкладкой ===
+// Открывается из контекстного меню вкладки. Внутри — список юзеров с 3 кнопками
+// (Нет / Просмотр / Редакт.), клик мгновенно сохраняет на сервер. Закрывается по
+// клику вне попапа или Escape.
+const permPopover = reactive({
+    show: false,
+    x: 0,
+    y: 0,
+    sheet: null,
+    users: [],          // все не-админы
+    assigned: [],       // [{ id, role }]
+    loading: false,
+    busy: false,
+    search: '',
+});
+
+const openPermPopover = async (sheet, anchorEvent) => {
+    if (!props.isAdmin || !sheet) return;
+    closeContextMenu();
+    // Позиция: над вкладкой если внизу мало места, иначе под точкой клика.
+    const PW = 360;
+    const PH = 380;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = anchorEvent?.clientX ?? (vw / 2 - PW / 2);
+    let y = anchorEvent?.clientY ?? (vh / 2 - PH / 2);
+    if (x + PW > vw - 8) x = Math.max(8, vw - PW - 8);
+    if (y + PH > vh - 8) y = Math.max(8, y - PH);
+    permPopover.show = true;
+    permPopover.x = x;
+    permPopover.y = y;
+    permPopover.sheet = sheet;
+    permPopover.users = [];
+    permPopover.assigned = [];
+    permPopover.loading = true;
+    permPopover.search = '';
+    try {
+        const r = await axios.get(route('sheets.permissions', sheet.id));
+        permPopover.users = r.data?.allUsers || [];
+        permPopover.assigned = r.data?.assignedUsers || [];
+    } catch (e) {
+        alert('Не удалось загрузить права: ' + (e?.response?.data?.message || e?.message || ''));
+        permPopover.show = false;
+    } finally {
+        permPopover.loading = false;
+    }
+};
+
+const closePermPopover = () => { permPopover.show = false; };
+
+const permRoleOf = (userId) => permPopover.assigned.find(u => u.id === userId)?.role || 'none';
+
+const setPermRole = async (userId, role) => {
+    if (!permPopover.sheet || permPopover.busy) return;
+    const prev = permRoleOf(userId);
+    if (prev === role) return; // уже эта роль — без сетевого запроса
+    permPopover.busy = true;
+    // Оптимистичное обновление, чтобы UI реагировал мгновенно.
+    const idx = permPopover.assigned.findIndex(u => u.id === userId);
+    if (role === 'none') {
+        if (idx > -1) permPopover.assigned.splice(idx, 1);
+    } else {
+        if (idx > -1) permPopover.assigned[idx].role = role;
+        else permPopover.assigned.push({ id: userId, role });
+    }
+    try {
+        await axios.post(route('sheets.permissions.update', permPopover.sheet.id), { user_id: userId, role });
+    } catch (e) {
+        // Откат при ошибке.
+        if (prev === 'none') {
+            permPopover.assigned = permPopover.assigned.filter(u => u.id !== userId);
+        } else {
+            const back = permPopover.assigned.findIndex(u => u.id === userId);
+            if (back > -1) permPopover.assigned[back].role = prev;
+            else permPopover.assigned.push({ id: userId, role: prev });
+        }
+        alert('Не удалось сохранить: ' + (e?.response?.data?.message || e?.message || ''));
+    } finally {
+        permPopover.busy = false;
+    }
+};
+
+const filteredPermUsers = computed(() => {
+    const q = (permPopover.search || '').trim().toLowerCase();
+    const order = { editor: 0, viewer: 1, none: 2 };
+    return permPopover.users
+        .filter(u => !q || (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q))
+        .slice()
+        .sort((a, b) => {
+            const ra = order[permRoleOf(a.id)] ?? 2;
+            const rb = order[permRoleOf(b.id)] ?? 2;
+            if (ra !== rb) return ra - rb;
+            return (a.name || '').localeCompare(b.name || '', 'ru');
+        });
+});
+
+const permGrantedCount = computed(() => permPopover.assigned.length);
+
 const cellContextMenu = ref({ show: false, x: 0, y: 0, params: null });
 const handleCellContextMenu = (params) => { cellContextMenu.value = { show: true, x: params.event.clientX, y: params.event.clientY, params: params }; };
 
@@ -1588,9 +1686,13 @@ const exportXlsx = async () => {
 };
 
 const handleGlobalKeydown = (e) => {
-    // Esc — закрыть контекстное меню вкладки. Работает даже в полях ввода.
+    // Esc — закрыть контекстное меню вкладки или попап прав. Работает даже в полях ввода.
     if (e.key === 'Escape' && tabContextMenu.value.show) {
         closeContextMenu();
+        return;
+    }
+    if (e.key === 'Escape' && permPopover.show) {
+        closePermPopover();
         return;
     }
     if (!e.ctrlKey) return;
@@ -1632,6 +1734,7 @@ const handleGlobalKeydown = (e) => {
 
 const handleGlobalClick = () => {
     if (tabContextMenu.value.show) closeContextMenu();
+    if (permPopover.show) closePermPopover();
 };
 
 // Перед навигацией Inertia (смена листа, выход) — досылаем буфер несохранённых правок.
@@ -1919,10 +2022,109 @@ onUnmounted(() => {
 
         <!-- Контекстное меню вкладок -->
         <div v-if="tabContextMenu.show" :style="{ top: tabContextMenu.y + 'px', left: tabContextMenu.x + 'px' }"
-             class="fixed bg-white border border-gray-300 shadow-lg z-50 text-sm" @click.stop>
+             class="fixed bg-white border border-gray-300 shadow-lg z-50 text-sm min-w-[180px]" @click.stop>
             <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="startEditing(tabContextMenu.sheet); closeContextMenu()">Переименовать</div>
             <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer" @click="handleToggleHideSheet(tabContextMenu.sheet)">{{ isSheetHidden(tabContextMenu.sheet?.id) ? 'Показать' : 'Скрыть' }}</div>
-            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer text-red-600" @click="deleteSheet(tabContextMenu.sheet)">Удалить</div>
+            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer border-t border-gray-200 flex items-center gap-2"
+                 @click="openPermPopover(tabContextMenu.sheet, { clientX: tabContextMenu.x, clientY: tabContextMenu.y })">
+                <svg class="w-4 h-4 text-gray-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                <span>Права доступа…</span>
+            </div>
+            <div class="px-3 py-1.5 hover:bg-gray-100 cursor-pointer text-red-600 border-t border-gray-200" @click="deleteSheet(tabContextMenu.sheet)">Удалить</div>
+        </div>
+
+        <!-- Инлайн-попап «Права доступа» рядом с вкладкой -->
+        <div v-if="permPopover.show" :style="{ top: permPopover.y + 'px', left: permPopover.x + 'px' }"
+             class="fixed bg-white border border-gray-300 shadow-2xl rounded-lg z-50 text-sm w-[360px] max-h-[460px] flex flex-col"
+             @click.stop>
+            <div class="p-3 border-b">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <svg class="w-4 h-4 text-[#2563eb] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                        </svg>
+                        <div class="font-semibold truncate" :title="permPopover.sheet?.name">
+                            Права: {{ permPopover.sheet?.name }}
+                        </div>
+                    </div>
+                    <button @click="closePermPopover" class="text-gray-400 hover:text-black text-lg leading-none">&times;</button>
+                </div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                    Кликните на нужную роль — сохранится сразу.
+                </div>
+                <div class="relative mt-2">
+                    <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"/>
+                        <path d="m21 21-4.3-4.3"/>
+                    </svg>
+                    <input v-model="permPopover.search" type="text" placeholder="Поиск пользователя…"
+                           class="w-full border border-gray-300 rounded pl-7 pr-2 py-1 text-xs focus:outline-none focus:border-[#2563eb]" />
+                </div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto">
+                <div v-if="permPopover.loading" class="p-4 text-center text-xs text-gray-500">Загрузка…</div>
+                <div v-else-if="filteredPermUsers.length === 0" class="p-4 text-center text-xs text-gray-400 italic">
+                    {{ permPopover.search ? 'Ничего не найдено' : 'Нет других пользователей в системе.' }}
+                </div>
+                <div v-else>
+                    <div v-for="u in filteredPermUsers" :key="u.id"
+                         class="px-3 py-2 border-b last:border-0 hover:bg-gray-50"
+                         :class="permRoleOf(u.id) !== 'none' ? 'bg-yellow-50/50' : ''">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="min-w-0 flex-1">
+                                <div class="font-medium text-xs truncate">{{ u.name }}</div>
+                                <div class="text-[10px] text-gray-500 truncate">{{ u.email }}</div>
+                            </div>
+                            <div class="inline-flex border border-gray-300 rounded-md overflow-hidden text-[11px] shrink-0">
+                                <button @click="setPermRole(u.id, 'none')"
+                                        :disabled="permPopover.busy"
+                                        :class="['px-2 py-1 inline-flex items-center gap-1 transition-colors', permRoleOf(u.id) === 'none' ? 'bg-gray-200 text-gray-800 font-semibold' : 'bg-white text-gray-500 hover:bg-gray-50']"
+                                        title="Нет доступа">
+                                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="12" cy="12" r="9"/>
+                                        <line x1="5" y1="5" x2="19" y2="19"/>
+                                    </svg>
+                                    <span>Нет</span>
+                                </button>
+                                <button @click="setPermRole(u.id, 'viewer')"
+                                        :disabled="permPopover.busy"
+                                        :class="['px-2 py-1 inline-flex items-center gap-1 transition-colors border-l border-gray-300', permRoleOf(u.id) === 'viewer' ? 'bg-sky-500 text-white font-semibold' : 'bg-white text-sky-700 hover:bg-sky-50']"
+                                        title="Только просмотр">
+                                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                    <span>Смотрит</span>
+                                </button>
+                                <button @click="setPermRole(u.id, 'editor')"
+                                        :disabled="permPopover.busy"
+                                        :class="['px-2 py-1 inline-flex items-center gap-1 transition-colors border-l border-gray-300', permRoleOf(u.id) === 'editor' ? 'bg-emerald-600 text-white font-semibold' : 'bg-white text-emerald-700 hover:bg-emerald-50']"
+                                        title="Может редактировать">
+                                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M12 20h9"/>
+                                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                                    </svg>
+                                    <span>Редакт.</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-2 border-t bg-gray-50 text-[11px] text-gray-600 flex items-center justify-between">
+                <span>С доступом: <b class="text-gray-900">{{ permGrantedCount }}</b></span>
+                <span class="text-gray-400">Esc — закрыть</span>
+            </div>
         </div>
 
         <!-- Модалка bulk-назначения прав после импорта -->
