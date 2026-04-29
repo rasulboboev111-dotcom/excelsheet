@@ -4,10 +4,9 @@ import GuestLayout from '@/Layouts/GuestLayout.vue';
 import InputError from '@/Components/InputError.vue';
 import InputLabel from '@/Components/InputLabel.vue';
 import TextInput from '@/Components/TextInput.vue';
-import { Head, Link, useForm } from '@inertiajs/vue3';
+import { Head, useForm } from '@inertiajs/vue3';
 
 defineProps({
-    canResetPassword: Boolean,
     status: String,
 });
 
@@ -65,18 +64,11 @@ const submit = () => {
                 <InputError class="mt-1.5" :message="form.errors.password" />
             </div>
 
-            <div class="flex items-center justify-between">
+            <div class="flex items-center">
                 <label class="flex items-center cursor-pointer">
                     <Checkbox name="remember" v-model:checked="form.remember" />
                     <span class="ml-2 text-sm text-gray-600">Запомнить меня</span>
                 </label>
-                <Link
-                    v-if="canResetPassword"
-                    :href="route('password.request')"
-                    class="text-sm text-[#2563eb] hover:text-[#1d4ed8] hover:underline"
-                >
-                    Забыли пароль?
-                </Link>
             </div>
 
             <button type="submit"

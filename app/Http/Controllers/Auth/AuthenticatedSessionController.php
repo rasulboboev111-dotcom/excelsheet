@@ -8,7 +8,6 @@ use App\Providers\RouteServiceProvider;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -19,8 +18,9 @@ class AuthenticatedSessionController extends Controller
      */
     public function create(): Response
     {
+        // Сброс пароля отключён — почтовый канал не настроен.
+        // Восстановление доступа делает админ через /users или CLI.
         return Inertia::render('Auth/Login', [
-            'canResetPassword' => Route::has('password.request'),
             'status' => session('status'),
         ]);
     }
