@@ -19,6 +19,21 @@ class SheetController extends Controller
     private const MAX_ROW_INDEX = 1048576;
 
     /**
+     * Уникальный 64-битный ключ для pg_advisory_xact_lock — сериализует выдачу
+     * нового sheets.order между параллельными импортами/созданиями. Лок снимается
+     * автоматически в конце транзакции (commit/rollback).
+     *
+     * Ключ должен быть стабильным и единым во всём приложении. Берём отрезок md5
+     * имени домена ('sheets_order_advisory_lock') и приводим к bigint.
+     */
+    private const SHEETS_ORDER_LOCK_KEY = 638295124133566588; // hexdec(substr(md5('sheets_order'),0,15))
+
+    private static function lockSheetsOrder(): void
+    {
+        DB::statement('SELECT pg_advisory_xact_lock(?)', [self::SHEETS_ORDER_LOCK_KEY]);
+    }
+
+    /**
      * Приводит значение ячейки к каноничному виду для сравнения «было/стало».
      * Решает кейс: БД отдала число `5`, фронт прислал строку `"5"` — раньше это
      * было «изменением», сейчас оба нормализуются к 5.0 и diff не сработает.
@@ -275,10 +290,13 @@ class SheetController extends Controller
         // Создавать листы может только админ.
         $this->authorizeAdmin();
 
-        // Транзакция + блокировка max(order) — иначе при одновременном создании
+        // Транзакция + advisory-lock — иначе при одновременном создании
         // двумя пользователями оба получат одинаковый order.
+        // PostgreSQL не поддерживает FOR UPDATE с агрегатами (MAX),
+        // поэтому используем pg_advisory_xact_lock — снимается на коммите/rollback.
         $sheet = DB::transaction(function () {
-            $maxOrder = (int) Sheet::lockForUpdate()->max('order');
+            self::lockSheetsOrder();
+            $maxOrder = (int) Sheet::max('order');
             return Sheet::create([
                 'name' => 'Новый лист',
                 'user_id' => Auth::id(),
@@ -326,7 +344,8 @@ class SheetController extends Controller
         }
 
         $sheet = DB::transaction(function () use ($payload, $columns) {
-            $maxOrder = (int) Sheet::lockForUpdate()->max('order');
+            self::lockSheetsOrder();
+            $maxOrder = (int) Sheet::max('order');
             $newSheet = Sheet::create([
                 'name'    => $payload['name'],
                 'user_id' => Auth::id(),
