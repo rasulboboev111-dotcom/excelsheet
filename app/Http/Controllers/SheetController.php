@@ -34,7 +34,10 @@ class SheetController extends Controller
      * Ключ должен быть стабильным и единым во всём приложении. Берём отрезок md5
      * имени домена ('sheets_order_advisory_lock') и приводим к bigint.
      */
-    private const SHEETS_ORDER_LOCK_KEY = 638295124133566588; // hexdec(substr(md5('sheets_order'),0,15))
+    // 32-bit safe ключ (помещается в PHP_INT_MAX на 32-bit PHP). Сериализует
+    // одновременные импорты/создания листов, чтобы они не получили один order.
+    // Любое стабильное 32-bit положительное число подойдёт — здесь crc32-производное.
+    private const SHEETS_ORDER_LOCK_KEY = 645908789; // crc32('sheets_order_lock') — fits in int32
 
     private static function lockSheetsOrder(): void
     {

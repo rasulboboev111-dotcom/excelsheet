@@ -29,42 +29,60 @@ return new class extends Migration
         $modelRoles   = $tableNames['model_has_roles'];
         $modelPerms   = $tableNames['model_has_permissions'];
 
-        // 1. roles: добавить team_id (nullable). Уникальность по (name, guard_name)
-        // оставляем как есть — у нас все роли глобальные (team_id=NULL).
-        Schema::table($rolesTbl, function ($table) use ($teamFk) {
-            $table->unsignedBigInteger($teamFk)->nullable()->after('id');
-            $table->index($teamFk, 'roles_team_foreign_key_index');
-        });
+        // 1. roles: добавить team_id если ещё нет. На fresh-deploy с teams=true
+        // оригинальная Spatie миграция уже создаёт колонку — тогда пропускаем.
+        if (!Schema::hasColumn($rolesTbl, $teamFk)) {
+            Schema::table($rolesTbl, function ($table) use ($teamFk) {
+                $table->unsignedBigInteger($teamFk)->nullable()->after('id');
+                $table->index($teamFk, 'roles_team_foreign_key_index');
+            });
+        }
 
-        // 2. model_has_roles: добавить team_id, перестроить уникальность.
-        // Сначала дропаем существующий primary key, потом добавляем колонку и
-        // новый уникальный индекс с NULLS NOT DISTINCT (PG15+) — чтобы (NULL, role, model_id, type)
-        // считались равными между собой и не появлялись дубли для admin.
-        DB::statement("ALTER TABLE {$modelRoles} DROP CONSTRAINT model_has_roles_pkey");
-        Schema::table($modelRoles, function ($table) use ($teamFk) {
-            $table->unsignedBigInteger($teamFk)->nullable();
-            $table->index($teamFk, 'model_has_roles_team_foreign_key_index');
-        });
-        DB::statement("CREATE UNIQUE INDEX model_has_roles_unique
+        // 2. model_has_roles: добавить team_id если ещё нет, перестроить уникальность.
+        // PG15+ NULLS NOT DISTINCT нужен чтобы (NULL, role, model_id, type) считались
+        // равными между собой и не появлялись дубли для admin.
+        if (!Schema::hasColumn($modelRoles, $teamFk)) {
+            // Для апгрейда с teams=false к teams=true: дропаем старый PK + добавляем колонку.
+            DB::statement("ALTER TABLE {$modelRoles} DROP CONSTRAINT IF EXISTS model_has_roles_pkey");
+            Schema::table($modelRoles, function ($table) use ($teamFk) {
+                $table->unsignedBigInteger($teamFk)->nullable();
+                $table->index($teamFk, 'model_has_roles_team_foreign_key_index');
+            });
+        } else {
+            // Колонка уже есть (fresh-deploy с teams=true) — оригинальная миграция
+            // уже сделала PK включающий team_id и колонку NOT NULL. Дропаем PK и
+            // делаем nullable, чтобы admin (team_id=NULL) мог быть assigned.
+            DB::statement("ALTER TABLE {$modelRoles} DROP CONSTRAINT IF EXISTS model_has_roles_pkey");
+            DB::statement("ALTER TABLE {$modelRoles} ALTER COLUMN {$teamFk} DROP NOT NULL");
+        }
+        // Уникальный индекс ставим всегда (если ещё нет).
+        DB::statement("CREATE UNIQUE INDEX IF NOT EXISTS model_has_roles_unique
             ON {$modelRoles} ({$teamFk}, {$rolePivot}, {$modelKey}, model_type)
             NULLS NOT DISTINCT");
 
-        // 3. model_has_permissions: то же самое (на будущее, пока permissions не используем).
-        DB::statement("ALTER TABLE {$modelPerms} DROP CONSTRAINT model_has_permissions_pkey");
-        Schema::table($modelPerms, function ($table) use ($teamFk) {
-            $table->unsignedBigInteger($teamFk)->nullable();
-            $table->index($teamFk, 'model_has_permissions_team_foreign_key_index');
-        });
-        DB::statement("CREATE UNIQUE INDEX model_has_permissions_unique
+        // 3. model_has_permissions: то же самое.
+        if (!Schema::hasColumn($modelPerms, $teamFk)) {
+            DB::statement("ALTER TABLE {$modelPerms} DROP CONSTRAINT IF EXISTS model_has_permissions_pkey");
+            Schema::table($modelPerms, function ($table) use ($teamFk) {
+                $table->unsignedBigInteger($teamFk)->nullable();
+                $table->index($teamFk, 'model_has_permissions_team_foreign_key_index');
+            });
+        } else {
+            DB::statement("ALTER TABLE {$modelPerms} DROP CONSTRAINT IF EXISTS model_has_permissions_pkey");
+            DB::statement("ALTER TABLE {$modelPerms} ALTER COLUMN {$teamFk} DROP NOT NULL");
+        }
+        DB::statement("CREATE UNIQUE INDEX IF NOT EXISTS model_has_permissions_unique
             ON {$modelPerms} ({$teamFk}, {$permPivot}, {$modelKey}, model_type)
             NULLS NOT DISTINCT");
 
-        // 4. Создаём роли editor/viewer с team_id=NULL (глобальные определения,
-        // assignments будут с конкретным team_id=sheet_id).
+        // 4. Создаём роли admin/editor/viewer с team_id=NULL (глобальные определения,
+        // assignments будут с team_id=NULL для admin или с team_id=sheet_id для editor/viewer).
+        // На fresh-deploy роли создаются здесь; на апгрейде с teams=false — admin уже есть,
+        // создаются только editor/viewer.
         $now = now();
-        $existingRoles = DB::table($rolesTbl)->whereIn('name', ['editor', 'viewer'])->pluck('id', 'name')->all();
+        $existingRoles = DB::table($rolesTbl)->whereIn('name', ['admin', 'editor', 'viewer'])->pluck('id', 'name')->all();
         $rolesToInsert = [];
-        foreach (['editor', 'viewer'] as $name) {
+        foreach (['admin', 'editor', 'viewer'] as $name) {
             if (!isset($existingRoles[$name])) {
                 $rolesToInsert[] = [
                     'name' => $name,
