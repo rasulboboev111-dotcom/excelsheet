@@ -1637,6 +1637,10 @@ const handleGlobalClick = () => {
 // Перед навигацией Inertia (смена листа, выход) — досылаем буфер несохранённых правок.
 let _removeInertiaBefore = null;
 
+// Сохраняем исходный overflow body — при unmount возвращаем как было,
+// чтобы не сломать скролл на других страницах (audit-log, users, profile).
+let _prevBodyOverflow = '';
+
 onMounted(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('click', handleGlobalClick);
@@ -1644,6 +1648,10 @@ onMounted(() => {
     // который не отменяется Inertia/браузером при unload.
     window.addEventListener('beforeunload', _flushPendingSyncBeacon);
     _removeInertiaBefore = router.on('before', () => { _flushPendingSyncBeacon(); });
+    // Excel-таблица сама управляет скроллом — body должен быть зафиксирован,
+    // но только пока Dashboard смонтирован.
+    _prevBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
 });
 
 onUnmounted(() => {
@@ -1654,6 +1662,7 @@ onUnmounted(() => {
     window.removeEventListener('click', handleGlobalClick);
     window.removeEventListener('beforeunload', _flushPendingSyncBeacon);
     if (_removeInertiaBefore) _removeInertiaBefore();
+    document.body.style.overflow = _prevBodyOverflow;
 });
 </script>
 
@@ -1974,7 +1983,6 @@ onUnmounted(() => {
 </template>
 
 <style>
-body { overflow: hidden; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
