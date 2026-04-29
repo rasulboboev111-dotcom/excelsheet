@@ -175,7 +175,7 @@ return [
         App\Providers\AuthServiceProvider::class,
         // App\Providers\BroadcastServiceProvider::class,
         App\Providers\EventServiceProvider::class,
-        App\Providers\RouteServiceProvider::class,
+        // RouteServiceProvider удалён — маршруты теперь в bootstrap/app.php через withRouting().
 
     ],
 
