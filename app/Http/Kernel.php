@@ -38,7 +38,9 @@ class Kernel extends HttpKernel
             \App\Http\Middleware\VerifyCsrfToken::class,
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
             \App\Http\Middleware\HandleInertiaRequests::class,
-            \Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets::class,
+            // AddLinkHeadersForPreloadedAssets выключен: Vite уже ставит
+            // <link rel="stylesheet"> в HTML, а параллельные preload'ы на ту же
+            // CSS вызывают warning'и в консоли «preloaded but not used».
         ],
 
         'api' => [
