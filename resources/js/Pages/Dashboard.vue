@@ -531,6 +531,10 @@ const redo = async () => {
 const _pendingSyncRows = new Set();
 let _pendingSyncTimer = null;
 const SYNC_DEBOUNCE_MS = 400;
+// Жёсткий потолок очереди: если за один tick добавилось столько строк (например,
+// массовый paste 2000+ ячеек или быстрая правка не давая debounce'у сработать) —
+// сбрасываем сразу, не ждём таймер. Защита от неограниченного роста Set'а.
+const SYNC_MAX_PENDING = 1000;
 
 // Сборка тела запроса из буфера. Возвращает {url, payload} или null если нечего слать.
 const _buildSyncPayload = () => {
@@ -607,6 +611,13 @@ const _flushPendingSyncBeacon = () => {
 const syncChangesToServer = (rows) => {
     if (!Array.isArray(rows)) rows = [rows];
     rows.forEach(r => { if (r) _pendingSyncRows.add(r); });
+    // Если очередь распухла (paste большого диапазона / быстрый поток правок,
+    // постоянно сбрасывающий debounce-таймер) — сливаем немедленно, чтобы Set
+    // не рос неограниченно. _flushPendingSync сам очищает таймер и Set.
+    if (_pendingSyncRows.size >= SYNC_MAX_PENDING) {
+        _flushPendingSync();
+        return;
+    }
     if (_pendingSyncTimer) clearTimeout(_pendingSyncTimer);
     _pendingSyncTimer = setTimeout(_flushPendingSync, SYNC_DEBOUNCE_MS);
     // ВАЖНО: больше НЕ дёргаем redrawRows() здесь. Он убивал активный редактор
