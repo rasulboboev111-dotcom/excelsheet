@@ -626,15 +626,20 @@ class SheetController extends Controller
         $safeName = preg_replace('/[^\p{L}\p{N}\s_\-]/u', '', $sheet->name) ?: 'Sheet1';
         $ws->setTitle(mb_substr($safeName, 0, 31));
 
+        // PhpSpreadsheet v4 убрал setCellValueByColumnAndRow — нужно строить адрес
+        // ячейки строкой ('A1', 'B1', ...). Coordinate::stringFromColumnIndex
+        // переводит 1→A, 2→B, ..., 27→AA.
+        $colAddr = fn (int $i) => \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
+
         // Заголовки.
         $col = 1;
         foreach ($columns as $c) {
-            $ws->setCellValueByColumnAndRow($col, 1, $c['headerName'] ?? $c['field'] ?? ('Column ' . $col));
+            $ws->setCellValue($colAddr($col) . '1', $c['headerName'] ?? $c['field'] ?? ('Column ' . $col));
             $col++;
         }
         // Жирный шрифт для заголовков.
         if (!empty($columns)) {
-            $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($columns));
+            $lastCol = $colAddr(count($columns));
             $ws->getStyle("A1:{$lastCol}1")->getFont()->setBold(true);
         }
 
@@ -647,7 +652,7 @@ class SheetController extends Controller
                 if (!$field) { $col++; continue; }
                 $val = $r->row_data[$field] ?? null;
                 if ($val !== null && !is_array($val)) {
-                    $ws->setCellValueByColumnAndRow($col, $rowNum, $val);
+                    $ws->setCellValue($colAddr($col) . $rowNum, $val);
                 }
                 $col++;
             }

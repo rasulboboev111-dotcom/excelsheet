@@ -36,8 +36,18 @@ return [
         'client_id'     => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
         'redirect_uri'  => env('GOOGLE_REDIRECT_URI', env('APP_URL') . '/auth/google/callback'),
-        // gmail.send — отправка от имени юзера. Не даёт читать или удалять почту.
-        'scopes'        => ['https://www.googleapis.com/auth/gmail.send'],
+        // Scopes:
+        //   openid + email + profile — стандартные, не sensitive, дают
+        //     доступ к userinfo (email + sub юзера). Без них при первом
+        //     подключении не сможем узнать какой Gmail подключают.
+        //   gmail.send — отправка писем от имени юзера. Не даёт читать
+        //     или удалять почту. Sensitive — на проде нужна verification.
+        'scopes' => [
+            'openid',
+            'email',
+            'profile',
+            'https://www.googleapis.com/auth/gmail.send',
+        ],
     ],
 
 ];
