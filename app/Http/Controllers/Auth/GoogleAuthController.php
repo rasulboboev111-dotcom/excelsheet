@@ -47,6 +47,12 @@ class GoogleAuthController extends Controller
 
     public function connect(Request $request)
     {
+        // Юзер должен иметь право на отправку почты (Spatie permission send-mail).
+        // Без этого подключать Gmail бессмысленно — отправлять всё равно не сможет.
+        if (!\App\Models\Sheet::userCanSendMail(\Illuminate\Support\Facades\Auth::user())) {
+            abort(403, 'У вас нет прав на использование почтовой отправки. Запросите у администратора.');
+        }
+
         $cfg = config('services.google');
         if (empty($cfg['client_id']) || empty($cfg['client_secret'])) {
             abort(500, 'Google OAuth не настроен (GOOGLE_CLIENT_ID / SECRET в .env пустые).');

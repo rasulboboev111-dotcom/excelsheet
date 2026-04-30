@@ -571,6 +571,10 @@ class SheetController extends Controller
         ]);
 
         $user = Auth::user();
+        // Право на использование почтовой отправки (выдаётся админом в /users).
+        if (!Sheet::userCanSendMail($user)) {
+            abort(403, 'У вас нет прав на отправку почты.');
+        }
         if (!$user->hasGoogleConnected()) {
             return back()->withErrors(['gmail' => 'Сначала подключите Gmail в профиле.']);
         }

@@ -12,6 +12,7 @@ defineProps({
 });
 
 const page = usePage();
+const canSendMail    = computed(() => !!page.props.auth?.canSendMail);
 const gmailConnected = computed(() => !!page.props.auth?.gmailConnected);
 const gmailEmail     = computed(() => page.props.auth?.gmailEmail);
 const flashSuccess   = computed(() => page.props.flash?.success);
@@ -53,8 +54,9 @@ const disconnectGmail = () => {
                     <UpdatePasswordForm class="max-w-xl" />
                 </div>
 
-                <!-- Секция Gmail OAuth -->
-                <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
+                <!-- Секция Gmail OAuth — только если у юзера есть право send-mail.
+                     Без права секция вообще не появляется (юзер не знает что фича существует). -->
+                <div v-if="canSendMail" class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
                     <header class="max-w-xl">
                         <h2 class="text-lg font-medium text-gray-900 flex items-center gap-2">
                             <svg class="w-5 h-5 text-[#2563eb]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">

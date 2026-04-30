@@ -1932,9 +1932,9 @@ onUnmounted(() => {
                     </svg>
                     Скачать
                 </button>
-                <!-- Кнопка «Отправить по почте» — доступна только если у юзера подключён Gmail.
-                     Если не подключён — показываем серую кнопку-подсказку «Подключить Gmail». -->
-                <button v-if="activeSheet && $page.props.auth?.gmailConnected"
+                <!-- Кнопки «Отправить» / «Подключить Gmail» — ТОЛЬКО для юзеров с правом
+                     send-mail (выдаётся админом в /users). У остальных — никаких упоминаний почты. -->
+                <button v-if="activeSheet && $page.props.auth?.canSendMail && $page.props.auth?.gmailConnected"
                         @click="openSendEmail"
                         class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5"
                         title="Отправить таблицу по email через ваш Gmail">
@@ -1944,7 +1944,7 @@ onUnmounted(() => {
                     </svg>
                     Отправить
                 </button>
-                <Link v-else-if="activeSheet" :href="route('profile.edit')"
+                <Link v-else-if="activeSheet && $page.props.auth?.canSendMail" :href="route('profile.edit')"
                       class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5 opacity-70"
                       title="Подключите Gmail в профиле, чтобы отправлять таблицы по почте">
                     <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

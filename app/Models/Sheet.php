@@ -249,4 +249,63 @@ class Sheet extends Model
             $user->unsetRelation('roles');
         }
     }
+
+    /**
+     * Может ли юзер пользоваться почтовой отправкой? Админу всегда можно;
+     * остальным — только при наличии глобального permission 'send-mail'
+     * (team_id=NULL). Spatie с teams=true фильтрует по team-context, поэтому
+     * проверяем со снятым team_id, как для admin-роли.
+     */
+    public static function userCanSendMail(User $user): bool
+    {
+        if (self::userIsAdmin($user)) return true;
+
+        $registrar = app(PermissionRegistrar::class);
+        $prev = $registrar->getPermissionsTeamId();
+        try {
+            $registrar->setPermissionsTeamId(null);
+            $user->unsetRelation('permissions');
+            $user->unsetRelation('roles');
+            return $user->hasPermissionTo('send-mail');
+        } catch (\Throwable $e) {
+            // Permission ещё не существует / Spatie ругается → false.
+            return false;
+        } finally {
+            $registrar->setPermissionsTeamId($prev);
+            $user->unsetRelation('permissions');
+            $user->unsetRelation('roles');
+        }
+    }
+
+    public static function grantMailPermission(User $user): void
+    {
+        $registrar = app(PermissionRegistrar::class);
+        $prev = $registrar->getPermissionsTeamId();
+        try {
+            $registrar->setPermissionsTeamId(null);
+            $user->unsetRelation('permissions');
+            if (!$user->hasPermissionTo('send-mail')) {
+                $user->givePermissionTo('send-mail');
+            }
+        } finally {
+            $registrar->setPermissionsTeamId($prev);
+            $user->unsetRelation('permissions');
+        }
+    }
+
+    public static function revokeMailPermission(User $user): void
+    {
+        $registrar = app(PermissionRegistrar::class);
+        $prev = $registrar->getPermissionsTeamId();
+        try {
+            $registrar->setPermissionsTeamId(null);
+            $user->unsetRelation('permissions');
+            if ($user->hasPermissionTo('send-mail')) {
+                $user->revokePermissionTo('send-mail');
+            }
+        } finally {
+            $registrar->setPermissionsTeamId($prev);
+            $user->unsetRelation('permissions');
+        }
+    }
 }

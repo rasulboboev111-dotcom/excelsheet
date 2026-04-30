@@ -36,8 +36,12 @@ class HandleInertiaRequests extends Middleware
             'auth' => [
                 'user'    => $user,
                 'isAdmin' => $user ? Sheet::userIsAdmin($user) : false,
-                // Подключён ли Gmail у текущего юзера. Фронт показывает кнопку
-                // «Отправить по почте» в Dashboard только если true.
+                // Право пользоваться почтовой отправкой. Админ всегда может;
+                // обычный юзер — если ему выдан Spatie permission 'send-mail'.
+                // Фронт по этому флагу скрывает кнопки «Подключить Gmail» и «Отправить».
+                'canSendMail' => $user ? Sheet::userCanSendMail($user) : false,
+                // Подключён ли Gmail у текущего юзера. Кнопка «Отправить» в
+                // Dashboard работает только когда canSendMail && gmailConnected.
                 'gmailConnected' => $user ? $user->hasGoogleConnected() : false,
                 'gmailEmail'     => $user?->google_email,
             ],

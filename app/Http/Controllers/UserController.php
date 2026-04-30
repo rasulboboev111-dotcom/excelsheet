@@ -15,14 +15,17 @@ class UserController extends Controller
 {
     public function index()
     {
-        $users = User::orderBy('id')->get(['id', 'name', 'email', 'created_at'])
+        $users = User::orderBy('id')->get(['id', 'name', 'email', 'created_at', 'google_email'])
             ->map(function ($u) {
                 return [
-                    'id'         => $u->id,
-                    'name'       => $u->name,
-                    'email'      => $u->email,
-                    'is_admin'   => Sheet::userIsAdmin($u),
-                    'created_at' => $u->created_at?->toDateTimeString(),
+                    'id'              => $u->id,
+                    'name'            => $u->name,
+                    'email'           => $u->email,
+                    'is_admin'        => Sheet::userIsAdmin($u),
+                    'can_send_mail'   => Sheet::userCanSendMail($u),
+                    'gmail_connected' => $u->hasGoogleConnected(),
+                    'gmail_email'     => $u->google_email,
+                    'created_at'      => $u->created_at?->toDateTimeString(),
                 ];
             });
 
@@ -34,10 +37,11 @@ class UserController extends Controller
     public function store(Request $request)
     {
         $payload = $request->validate([
-            'name'     => 'required|string|max:255',
-            'email'    => 'required|string|email|max:255|unique:users,email',
-            'password' => ['required', 'confirmed', Password::min(6)],
-            'is_admin' => 'sometimes|boolean',
+            'name'          => 'required|string|max:255',
+            'email'         => 'required|string|email|max:255|unique:users,email',
+            'password'      => ['required', 'confirmed', Password::min(6)],
+            'is_admin'      => 'sometimes|boolean',
+            'can_send_mail' => 'sometimes|boolean',
         ]);
 
         $user = User::create([
@@ -50,6 +54,10 @@ class UserController extends Controller
         if (!empty($payload['is_admin'])) {
             Sheet::makeUserAdmin($user);
         }
+        if (!empty($payload['can_send_mail']) && empty($payload['is_admin'])) {
+            // Админу permission давать не нужно — у него и так всё.
+            Sheet::grantMailPermission($user);
+        }
 
         return redirect()->route('users.index');
     }
@@ -57,10 +65,11 @@ class UserController extends Controller
     public function update(Request $request, User $user)
     {
         $payload = $request->validate([
-            'name'     => 'required|string|max:255',
-            'email'    => ['required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
-            'password' => ['nullable', 'confirmed', Password::min(6)],
-            'is_admin' => 'sometimes|boolean',
+            'name'          => 'required|string|max:255',
+            'email'         => ['required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
+            'password'      => ['nullable', 'confirmed', Password::min(6)],
+            'is_admin'      => 'sometimes|boolean',
+            'can_send_mail' => 'sometimes|boolean',
         ]);
 
         $user->name  = $payload['name'];
@@ -79,6 +88,20 @@ class UserController extends Controller
             Sheet::makeUserAdmin($user);
         } elseif (!$wantsAdmin && $isAdmin && !$isSelf) {
             Sheet::removeUserAdmin($user);
+        }
+
+        // Управление правом на отправку почты. Админу permission не нужен
+        // (у него и так всё), но и не мешает — не трогаем флаг для админов.
+        if (!Sheet::userIsAdmin($user)) {
+            $wantsMail = !empty($payload['can_send_mail']);
+            $hasMail = Sheet::userCanSendMail($user);
+            if ($wantsMail && !$hasMail) {
+                Sheet::grantMailPermission($user);
+            } elseif (!$wantsMail && $hasMail) {
+                Sheet::revokeMailPermission($user);
+                // Если у юзера был подключён Gmail — не отзываем токены сами,
+                // юзер сам отключит когда захочет. Право просто скрывает кнопки.
+            }
         }
 
         return redirect()->route('users.index');
