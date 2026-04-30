@@ -82,9 +82,47 @@ class GmailMailerService
         } catch (\Google\Service\Exception $e) {
             // Парсим JSON-ответ Google для понятной ошибки.
             $details = json_decode($e->getMessage(), true);
-            $msg = $details['error']['message'] ?? $e->getMessage();
-            throw new RuntimeException('Gmail API: ' . $msg, $e->getCode(), $e);
+            $rawMsg = $details['error']['message'] ?? $e->getMessage();
+
+            // Переводим распространённые ошибки в понятный для юзера текст.
+            // Сырое сообщение оставляем в logger через SheetController::email().
+            $friendly = $this->translateGoogleError($rawMsg, $e->getCode());
+
+            throw new RuntimeException($friendly, $e->getCode(), $e);
         }
+    }
+
+    /**
+     * Преобразует технические ошибки Gmail API в текст для модалки юзера.
+     * Полная техника по-прежнему пишется в laravel.log с user_id и sheet_id —
+     * админ всегда сможет посмотреть точную причину.
+     */
+    private function translateGoogleError(string $rawMsg, int $code): string
+    {
+        $low = strtolower($rawMsg);
+
+        if (str_contains($low, 'insufficient authentication scopes') || str_contains($low, 'insufficient_scope')) {
+            return 'Не удалось отправить письмо. Откройте Профиль → нажмите «Отключить» рядом с Gmail и подключитесь заново.';
+        }
+
+        if (str_contains($low, 'invalid_grant') || str_contains($low, 'token has been expired') || str_contains($low, 'token has been revoked')) {
+            return 'Доступ к Gmail был отозван. Зайдите в Профиль и переподключите Gmail.';
+        }
+
+        if (str_contains($low, 'daily limit') || str_contains($low, 'quota') || str_contains($low, 'rate limit')) {
+            return 'Дневной лимит Gmail исчерпан (500 писем/сутки на бесплатном аккаунте). Попробуйте через сутки.';
+        }
+
+        if (str_contains($low, 'invalid to header') || str_contains($low, 'invalid recipient')) {
+            return 'Адрес получателя некорректен.';
+        }
+
+        if (str_contains($low, 'attachment') && str_contains($low, 'large')) {
+            return 'Файл слишком большой для отправки через Gmail (лимит ~25 МБ).';
+        }
+
+        // Для всех остальных — короткое нейтральное сообщение без технических деталей.
+        return 'Не удалось отправить письмо. Попробуйте ещё раз или обратитесь к администратору.';
     }
 
     /**

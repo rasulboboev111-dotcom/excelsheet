@@ -576,7 +576,8 @@ class SheetController extends Controller
             abort(403, 'У вас нет прав на отправку почты.');
         }
         if (!$user->hasGoogleConnected()) {
-            return back()->withErrors(['gmail' => 'Сначала подключите Gmail в профиле.']);
+            // JSON 422 — иначе axios на back()->withErrors() получает 302 и думает что успех.
+            return response()->json(['errors' => ['gmail' => ['Сначала подключите Gmail в профиле.']]], 422);
         }
 
         $subject = trim($payload['subject'] ?? '') !== ''
@@ -601,7 +602,15 @@ class SheetController extends Controller
         try {
             $mailer->send($user, $payload['to'], $subject, $body, $attachment, isHtml: false);
         } catch (\RuntimeException $e) {
-            return back()->withErrors(['gmail' => $e->getMessage()]);
+            // Логируем причину чтобы в laravel.log было видно что именно упало.
+            \Log::warning('Gmail send failed', [
+                'user_id'   => $user->id,
+                'to'        => $payload['to'],
+                'sheet_id'  => $sheet->id,
+                'error'     => $e->getMessage(),
+            ]);
+            // JSON 422 чтобы axios зашёл в catch (back()->withErrors даёт 302 → axios думает успех).
+            return response()->json(['errors' => ['gmail' => [$e->getMessage()]]], 422);
         }
 
         $this->logAudit('sheet_emailed', $sheet->id, [
@@ -612,7 +621,7 @@ class SheetController extends Controller
             'sender_gmail' => $user->google_email,
         ]);
 
-        return back()->with('flash_success', 'Письмо отправлено.');
+        return response()->json(['ok' => true]);
     }
 
     /**
