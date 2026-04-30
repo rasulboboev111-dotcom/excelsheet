@@ -54,10 +54,11 @@ const formatDateTime = (s) => {
 const actionLabel = (key) => props.actions?.[key] || key;
 
 const actionBadgeClass = (key) => {
-    if (key === 'sheet_deleted' || key === 'row_deleted') return 'bg-red-100 text-red-700';
-    if (key === 'sheet_created' || key === 'sheet_imported' || key === 'row_inserted') return 'bg-green-100 text-green-700';
+    if (key === 'sheet_deleted' || key === 'row_deleted' || key === 'gmail_disconnected') return 'bg-red-100 text-red-700';
+    if (key === 'sheet_created' || key === 'sheet_imported' || key === 'row_inserted' || key === 'gmail_connected') return 'bg-green-100 text-green-700';
     if (key === 'sheet_renamed') return 'bg-yellow-100 text-yellow-700';
     if (key === 'audit_cleared') return 'bg-purple-100 text-purple-700';
+    if (key === 'sheet_emailed') return 'bg-indigo-100 text-indigo-700';
     return 'bg-blue-100 text-blue-700';
 };
 
@@ -77,6 +78,9 @@ const detailsSummary = (log) => {
     if (log.action === 'sheet_imported') return `«${d.name ?? '?'}» · строк: ${d.rows_count ?? 0} · колонок: ${d.columns_count ?? 0}`;
     if (log.action === 'row_inserted' || log.action === 'row_deleted') return `строка ${(d.row_index ?? 0) + 1}`;
     if (log.action === 'audit_cleared') return `удалено записей: ${d.removed_entries ?? '?'}`;
+    if (log.action === 'sheet_emailed')      return `→ ${d.to ?? '?'} (${d.attachment_kb ?? 0} КБ)`;
+    if (log.action === 'gmail_connected')    return `✓ ${d.gmail_email ?? '?'}`;
+    if (log.action === 'gmail_disconnected') return `${d.gmail_email ?? '?'}`;
     // cell_edit — рендерится отдельным компонентом-таблицей, см. шаблон.
     return null;
 };

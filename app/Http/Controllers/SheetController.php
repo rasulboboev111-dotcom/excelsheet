@@ -5,11 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\Sheet;
 use App\Models\SheetAuditLog;
 use App\Models\SheetData;
+use App\Services\GmailMailerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Auth\Access\AuthorizationException;
 use Inertia\Inertia;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 class SheetController extends Controller
 {
@@ -545,5 +548,123 @@ class SheetController extends Controller
         ]);
 
         return back();
+    }
+
+    /**
+     * Отправить лист по почте через подключенный Gmail юзера.
+     * POST /sheets/{sheet}/email
+     *   to:      email получателя
+     *   subject: тема (опц.)
+     *   message: текст сообщения (опц.)
+     *   attach_xlsx: bool — прикрепить .xlsx (по умолчанию true)
+     */
+    public function email(Request $request, Sheet $sheet, GmailMailerService $mailer)
+    {
+        // Юзер должен иметь хотя бы view-доступ к листу.
+        $this->authorizeView($sheet);
+
+        $payload = $request->validate([
+            'to'           => 'required|email|max:255',
+            'subject'      => 'nullable|string|max:255',
+            'message'      => 'nullable|string|max:5000',
+            'attach_xlsx'  => 'sometimes|boolean',
+        ]);
+
+        $user = Auth::user();
+        if (!$user->hasGoogleConnected()) {
+            return back()->withErrors(['gmail' => 'Сначала подключите Gmail в профиле.']);
+        }
+
+        $subject = trim($payload['subject'] ?? '') !== ''
+            ? $payload['subject']
+            : 'Таблица: ' . $sheet->name;
+
+        // Тело: имя+email отправителя + (опц.) сообщение + ссылка на лист.
+        $bodyLines = [];
+        $bodyLines[] = "{$user->name} ({$user->google_email}) отправил вам таблицу с сайта Excel Tojiktelecom.";
+        if (!empty($payload['message'])) {
+            $bodyLines[] = "";
+            $bodyLines[] = $payload['message'];
+        }
+        $body = implode("\r\n", $bodyLines);
+
+        // Генерим .xlsx если нужно.
+        $attachment = null;
+        if (($payload['attach_xlsx'] ?? true)) {
+            $attachment = $this->buildXlsxAttachment($sheet);
+        }
+
+        try {
+            $mailer->send($user, $payload['to'], $subject, $body, $attachment, isHtml: false);
+        } catch (\RuntimeException $e) {
+            return back()->withErrors(['gmail' => $e->getMessage()]);
+        }
+
+        $this->logAudit('sheet_emailed', $sheet->id, [
+            'to'           => $payload['to'],
+            'subject'      => $subject,
+            'has_attachment' => $attachment !== null,
+            'attachment_kb' => $attachment ? (int) round(strlen($attachment['data']) / 1024) : 0,
+            'sender_gmail' => $user->google_email,
+        ]);
+
+        return back()->with('flash_success', 'Письмо отправлено.');
+    }
+
+    /**
+     * Генерит .xlsx для отправки. Возвращает массив для GmailMailerService.
+     * Использует PhpSpreadsheet (уже в composer.json).
+     */
+    private function buildXlsxAttachment(Sheet $sheet): array
+    {
+        $columns = $sheet->columns ?? [];
+        $rows = SheetData::where('sheet_id', $sheet->id)->orderBy('row_index')->get();
+
+        $spreadsheet = new Spreadsheet();
+        $ws = $spreadsheet->getActiveSheet();
+        // Имя листа: PhpSpreadsheet ругается на >31 символ и спецсимволы — обрежем + почистим.
+        $safeName = preg_replace('/[^\p{L}\p{N}\s_\-]/u', '', $sheet->name) ?: 'Sheet1';
+        $ws->setTitle(mb_substr($safeName, 0, 31));
+
+        // Заголовки.
+        $col = 1;
+        foreach ($columns as $c) {
+            $ws->setCellValueByColumnAndRow($col, 1, $c['headerName'] ?? $c['field'] ?? ('Column ' . $col));
+            $col++;
+        }
+        // Жирный шрифт для заголовков.
+        if (!empty($columns)) {
+            $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($columns));
+            $ws->getStyle("A1:{$lastCol}1")->getFont()->setBold(true);
+        }
+
+        // Данные.
+        $rowNum = 2;
+        foreach ($rows as $r) {
+            $col = 1;
+            foreach ($columns as $c) {
+                $field = $c['field'] ?? null;
+                if (!$field) { $col++; continue; }
+                $val = $r->row_data[$field] ?? null;
+                if ($val !== null && !is_array($val)) {
+                    $ws->setCellValueByColumnAndRow($col, $rowNum, $val);
+                }
+                $col++;
+            }
+            $rowNum++;
+        }
+
+        // Записываем в память.
+        $writer = new Xlsx($spreadsheet);
+        ob_start();
+        $writer->save('php://output');
+        $xlsxBytes = ob_get_clean();
+
+        $filename = preg_replace('/[^\p{L}\p{N}\s_\-]/u', '_', $sheet->name) ?: 'sheet';
+        return [
+            'name' => $filename . '.xlsx',
+            'data' => $xlsxBytes,
+            'mime' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ];
     }
 }

@@ -39,6 +39,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/sheets/{sheet}/insert-row', [SheetController::class, 'insertRow'])->name('sheets.insertRow');
     Route::post('/sheets/{sheet}/delete-row', [SheetController::class, 'deleteRow'])->name('sheets.deleteRow');
 
+    // Отправка листа по почте через подключенный Gmail юзера.
+    // Rate limit 30/час — защита от спама и от исчерпания Gmail-квоты юзера.
+    Route::post('/sheets/{sheet}/email', [SheetController::class, 'email'])
+        ->middleware('throttle:30,60')
+        ->name('sheets.email');
+
     // Импорт xlsx — любой залогиненный юзер. Импортёр становится owner новых листов
     // и может их редактировать. Видимость для других юзеров остаётся за админом.
     Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])->name('sheets.importSheet');
@@ -66,6 +72,11 @@ Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+
+    // Подключение Gmail-аккаунта юзера для отправки писем от его имени.
+    Route::get('/auth/google/connect',     [\App\Http\Controllers\Auth\GoogleAuthController::class, 'connect'])->name('google.connect');
+    Route::get('/auth/google/callback',    [\App\Http\Controllers\Auth\GoogleAuthController::class, 'callback'])->name('google.callback');
+    Route::delete('/auth/google/disconnect',[\App\Http\Controllers\Auth\GoogleAuthController::class, 'disconnect'])->name('google.disconnect');
 });
 
 require __DIR__.'/auth.php';

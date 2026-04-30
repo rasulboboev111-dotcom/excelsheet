@@ -29,6 +29,9 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        // Никогда не отдаём google-токены в JSON-ответах фронту/Inertia.
+        'google_refresh_token',
+        'google_access_token',
     ];
 
     /**
@@ -38,7 +41,19 @@ class User extends Authenticatable
      */
     protected $casts = [
         'email_verified_at' => 'datetime',
+        // ENCRYPTED — Laravel шифрует/дешифрует на лету через APP_KEY.
+        // В БД хранится bcrypt-подобная зашифрованная строка, в коде получаем plain.
+        'google_refresh_token'    => 'encrypted',
+        'google_access_token'     => 'encrypted',
+        'google_token_expires_at' => 'datetime',
+        'google_connected_at'     => 'datetime',
     ];
+
+    /** Удобный геттер: подключён ли Gmail у юзера. */
+    public function hasGoogleConnected(): bool
+    {
+        return !empty($this->google_refresh_token);
+    }
 
     /**
      * При удалении юзера чистим его ролевые назначения в Spatie-таблицах вручную.

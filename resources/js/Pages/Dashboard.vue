@@ -107,6 +107,50 @@ const onWheelZoom = (e) => {
 };
 const openZoomDialog = () => { zoomDialogValue.value = zoom.value; showZoomDialog.value = true; };
 
+// === Email send dialog (Gmail OAuth) ===
+const sendEmail = reactive({
+    show: false,
+    to: '',
+    subject: '',
+    message: '',
+    attachXlsx: true,
+    submitting: false,
+    error: '',
+});
+const openSendEmail = () => {
+    sendEmail.show = true;
+    sendEmail.to = '';
+    sendEmail.subject = props.activeSheet ? `Таблица: ${props.activeSheet.name}` : '';
+    sendEmail.message = '';
+    sendEmail.attachXlsx = true;
+    sendEmail.error = '';
+};
+const submitSendEmail = async () => {
+    if (!props.activeSheet) return;
+    if (sendEmail.submitting) return;
+    sendEmail.submitting = true;
+    sendEmail.error = '';
+    try {
+        await axios.post(route('sheets.email', props.activeSheet.id), {
+            to: sendEmail.to,
+            subject: sendEmail.subject,
+            message: sendEmail.message,
+            attach_xlsx: sendEmail.attachXlsx,
+        });
+        sendEmail.show = false;
+        // Лёгкий toast вместо alert.
+        try { alert('Письмо отправлено.'); } catch (_) {}
+    } catch (e) {
+        const data = e?.response?.data;
+        sendEmail.error = data?.errors?.gmail?.[0]
+            || data?.errors?.to?.[0]
+            || data?.message
+            || 'Не удалось отправить.';
+    } finally {
+        sendEmail.submitting = false;
+    }
+};
+
 // === Sort dialog ===
 const sortDialog = ref({ show: false, column: null, order: 'asc' });
 const applySortFromDialog = () => {
@@ -1888,6 +1932,27 @@ onUnmounted(() => {
                     </svg>
                     Скачать
                 </button>
+                <!-- Кнопка «Отправить по почте» — доступна только если у юзера подключён Gmail.
+                     Если не подключён — показываем серую кнопку-подсказку «Подключить Gmail». -->
+                <button v-if="activeSheet && $page.props.auth?.gmailConnected"
+                        @click="openSendEmail"
+                        class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5"
+                        title="Отправить таблицу по email через ваш Gmail">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="2"/>
+                        <path d="M3 7l9 6 9-6"/>
+                    </svg>
+                    Отправить
+                </button>
+                <Link v-else-if="activeSheet" :href="route('profile.edit')"
+                      class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm flex items-center gap-1.5 opacity-70"
+                      title="Подключите Gmail в профиле, чтобы отправлять таблицы по почте">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="2"/>
+                        <path d="M3 7l9 6 9-6"/>
+                    </svg>
+                    Подключить Gmail
+                </Link>
                 <Link v-if="isAdmin" :href="route('users.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Пользователи</Link>
                 <Link v-if="isAdmin" :href="route('audit-log.index')" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors text-sm">Журнал</Link>
                 <button v-if="isAdmin" @click="openPermissionsModal" class="bg-white/10 hover:bg-white/20 px-3 py-1 rounded transition-colors">Права доступа</button>
@@ -2013,6 +2078,75 @@ onUnmounted(() => {
                         <button @click="zoomIn" :disabled="zoom >= ZOOM_MAX" class="w-5 h-5 flex items-center justify-center hover:bg-gray-300 rounded disabled:opacity-40 text-gray-700" title="Увеличить">＋</button>
                         <button @click="openZoomDialog" class="ml-1 min-w-[42px] text-right hover:bg-gray-300 rounded px-1" title="Параметры масштаба">{{ zoom }}%</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Send email via Gmail -->
+        <div v-if="sendEmail.show" class="fixed inset-0 z-50 flex items-start justify-center pt-16 bg-black/40" @click.self="sendEmail.show = false">
+            <div class="bg-white rounded-xl shadow-2xl w-[520px] max-h-[90vh] flex flex-col">
+                <div class="p-4 border-b">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-5 h-5 text-[#2563eb]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                                <path d="M3 7l9 6 9-6"/>
+                            </svg>
+                            <h3 class="font-bold text-base">Отправить таблицу по почте</h3>
+                        </div>
+                        <button @click="sendEmail.show = false" class="text-gray-400 hover:text-black text-xl leading-none">&times;</button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Письмо уйдёт от вашего Gmail. Получатель ответит вам напрямую.
+                    </p>
+                </div>
+
+                <div class="p-4 overflow-y-auto flex-1 space-y-3">
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">Кому *</label>
+                        <input v-model="sendEmail.to" type="email" required placeholder="user@example.com"
+                               :disabled="sendEmail.submitting"
+                               class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-[#2563eb] focus:ring-2 focus:ring-blue-100" />
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">Тема</label>
+                        <input v-model="sendEmail.subject" type="text" maxlength="255"
+                               :disabled="sendEmail.submitting"
+                               class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-[#2563eb] focus:ring-2 focus:ring-blue-100" />
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">Сообщение</label>
+                        <textarea v-model="sendEmail.message" rows="5" maxlength="5000"
+                                  :disabled="sendEmail.submitting"
+                                  placeholder="Прикрепляю текущую версию таблицы…"
+                                  class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-[#2563eb] focus:ring-2 focus:ring-blue-100 resize-none"></textarea>
+                    </div>
+                    <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input v-model="sendEmail.attachXlsx" type="checkbox" :disabled="sendEmail.submitting" />
+                        Прикрепить .xlsx с таблицей
+                    </label>
+
+                    <div class="text-xs text-gray-500 pt-2 border-t">
+                        От: <b class="text-gray-700">{{ $page.props.auth?.gmailEmail }}</b>
+                    </div>
+
+                    <div v-if="sendEmail.error" class="px-3 py-2 rounded bg-red-50 border border-red-200 text-red-700 text-sm">
+                        {{ sendEmail.error }}
+                    </div>
+                </div>
+
+                <div class="p-4 border-t flex justify-end gap-2">
+                    <button @click="sendEmail.show = false" :disabled="sendEmail.submitting"
+                            class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded text-sm font-semibold disabled:opacity-50">
+                        Отмена
+                    </button>
+                    <button @click="submitSendEmail" :disabled="sendEmail.submitting || !sendEmail.to"
+                            class="px-4 py-2 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded text-sm font-semibold disabled:opacity-50 flex items-center gap-2">
+                        <svg v-if="sendEmail.submitting" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                            <path d="M12 2a10 10 0 0 1 10 10"/>
+                        </svg>
+                        {{ sendEmail.submitting ? 'Отправка…' : 'Отправить' }}
+                    </button>
                 </div>
             </div>
         </div>

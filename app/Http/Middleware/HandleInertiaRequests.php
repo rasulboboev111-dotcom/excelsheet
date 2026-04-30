@@ -36,6 +36,15 @@ class HandleInertiaRequests extends Middleware
             'auth' => [
                 'user'    => $user,
                 'isAdmin' => $user ? Sheet::userIsAdmin($user) : false,
+                // Подключён ли Gmail у текущего юзера. Фронт показывает кнопку
+                // «Отправить по почте» в Dashboard только если true.
+                'gmailConnected' => $user ? $user->hasGoogleConnected() : false,
+                'gmailEmail'     => $user?->google_email,
+            ],
+            // Flash-сообщения от GoogleAuthController после OAuth-callback'а.
+            'flash' => [
+                'success' => $request->session()->get('flash_success'),
+                'error'   => $request->session()->get('flash_error'),
             ],
             'ziggy' => function () use ($request) {
                 return array_merge((new Ziggy)->toArray(), [
