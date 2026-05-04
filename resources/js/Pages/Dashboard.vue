@@ -67,9 +67,17 @@ const internalClipboard = ref(null);
 // Состояние "Формат по образцу"
 const pendingFormatPainter = ref(null);
 
+// Панель «вся строка горизонтально» — открывается двойным кликом по ячейке.
+// Хранит снимок (плоский объект полей) — НЕ ссылку на исходную строку,
+// чтобы при правках в таблице снимок оставался стабильным до следующего dbl-click.
+const inspectedRow = ref(null);
+
 // --- Sheet meta (merges, validations, colWidths, rowHeights, hidden) ---
 const activeSheetId = computed(() => props.activeSheet?.id);
 const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId);
+
+// При смене листа закрываем панель просмотра строки — снимок принадлежал старому листу.
+watch(activeSheetId, () => { inspectedRow.value = null; });
 
 // --- Zoom (как в Excel: ползунок справа снизу, Ctrl+колесо, диалог по клику на проценты) ---
 const ZOOM_MIN = 25;
@@ -2034,11 +2042,34 @@ onUnmounted(() => {
                         @cell-context-menu="handleCellContextMenu" @selection-changed="handleSelectionChanged"
                         @range-clear="handleRangeClear" @ready="handleTableReady"
                         @grow-rows="handleGrowRows" @grow-cols="handleGrowCols"
-                        @column-resized="handleColumnResized" @row-resized="handleRowResized" />
+                        @column-resized="handleColumnResized" @row-resized="handleRowResized"
+                        @row-inspect="inspectedRow = $event" />
                 </div>
                 <ExcelContextMenu v-if="cellContextMenu.show" :x="cellContextMenu.x" :y="cellContextMenu.y" :cellData="cellContextMenu.params"
                     :canEdit="canEdit" :hasClipboard="!!internalClipboard"
                     @close="cellContextMenu.show = false" @action="handleMenuAction" />
+
+                <!-- Модалка просмотра строки — открывается двойным кликом по ячейке.
+                     По центру экрана с затемнением фона, закрывается крестиком,
+                     кликом по фону или клавишей Escape. Read-only: показываем
+                     значения ровно как они лежат в строке (без вычисления формул). -->
+                <div v-if="inspectedRow" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="inspectedRow = null" @keydown.esc="inspectedRow = null" tabindex="0">
+                    <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+                        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 shrink-0">
+                            <div class="text-base font-semibold text-gray-800">Информация о строке</div>
+                            <button @click="inspectedRow = null" class="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500" title="Закрыть">✕</button>
+                        </div>
+                        <div class="flex-1 overflow-y-auto px-5 py-3">
+                            <div v-for="col in columnDefs" :key="col.field" class="py-2 border-b border-gray-100 last:border-0">
+                                <div class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">{{ col.headerName || col.field }}</div>
+                                <div class="text-sm text-gray-900 break-words whitespace-pre-wrap min-h-[1.25rem]">{{ inspectedRow[col.field] ?? '' }}</div>
+                            </div>
+                        </div>
+                        <div class="px-5 py-3 border-t border-gray-200 text-right shrink-0">
+                            <button @click="inspectedRow = null" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm font-semibold text-gray-700">Закрыть</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="flex flex-col select-none shrink-0 bg-[#f3f2f1]">

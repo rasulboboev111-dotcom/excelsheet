@@ -32,7 +32,7 @@ const toAbsRow = (rowIdx, rowPinned) => {
 // Общее количество абсолютных строк (rowData может быть sliced при freezeRow)
 const totalAbsRows = () => (props.rowData?.length || 0) + (props.freezeRow ? 1 : 0);
 
-const emit = defineEmits(['cell-value-changed', 'cell-focused', 'cell-context-menu', 'selection-changed', 'ready', 'range-clear', 'grow-rows', 'grow-cols', 'column-resized', 'row-resized']);
+const emit = defineEmits(['cell-value-changed', 'cell-focused', 'cell-context-menu', 'selection-changed', 'ready', 'range-clear', 'grow-rows', 'grow-cols', 'column-resized', 'row-resized', 'row-inspect']);
 const gridApi = ref(null);
 
 const hf = HyperFormula.buildEmpty({ licenseKey: 'gpl-v3' });
@@ -297,6 +297,69 @@ const onCellFocused = (event) => {
 const onCellContextMenu = (params) => {
     params.event.preventDefault();
     emit('cell-context-menu', params);
+};
+
+// Форматирует значение точно так же, как valueFormatter в defaultColDef:
+// Excel-сериал → дата ru-RU, числа → разряды/валюта/проценты/decimals.
+// Используется для панели «Информация о строке», чтобы показывать ровно то,
+// что юзер видит в ячейке, а не сырой сериал/число без формата.
+const formatLikeCell = (rawVal, style) => {
+    if (rawVal === null || rawVal === undefined || rawVal === '') return rawVal;
+    const num = parseFloat(rawVal);
+    if (style?.numberFormat === 'shortDate' && !isNaN(num) && num > 0 && num < 2958466) {
+        const d = excelSerialToDate(num);
+        if (!isNaN(d)) return d.toLocaleDateString('ru-RU');
+    }
+    if (isNaN(num)) return rawVal;
+    let formatted = rawVal;
+    if (style?.decimals !== undefined) {
+        formatted = num.toFixed(style.decimals);
+    } else if (style?.numberFormat === 'currency' || style?.numberFormat === 'percentage') {
+        formatted = num.toFixed(2);
+    }
+    if (style?.numberFormat === 'currency') formatted = '$' + formatted;
+    if (style?.numberFormat === 'percent' || style?.numberFormat === 'percentage') formatted = formatted + '%';
+    if (style?.numberFormat === 'comma') {
+        const parts = String(formatted).split('.');
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        formatted = parts.join('.');
+    }
+    return formatted;
+};
+
+// Двойной клик по ячейке — отдаём наверх всю строку для панели просмотра.
+// Игнорируем колонку с номером строки (rowNum) и пустые pinned-плейсхолдеры.
+// Алгоритм для каждой колонки:
+//   1) если значение — формула (=...), считаем через HyperFormula и берём результат
+//      (как в ячейке таблицы);
+//   2) применяем тот же formatter, что и в ячейке (даты, разряды, валюта, проценты).
+const onCellDoubleClicked = (params) => {
+    if (!params.data) return;
+    if (params.column?.getColId() === 'rowNum') return;
+
+    const rowPinned = params.node?.rowPinned;
+    const bodyIdx = params.node?.rowIndex;
+    const absRow = rowPinned === 'top' ? 0 : (props.freezeRow ? bodyIdx + 1 : bodyIdx);
+    const sheetId = hf.getSheetId('Sheet1');
+
+    const snapshot = {};
+    props.columnDefs.forEach((col, colIndex) => {
+        const raw = params.data[col.field];
+        let resolved = raw;
+        if (typeof raw === 'string' && raw.startsWith('=')) {
+            try {
+                const v = (typeof sheetId === 'number')
+                    ? hf.getCellValue({ sheet: sheetId, col: colIndex, row: absRow })
+                    : raw;
+                resolved = v instanceof Error ? '#ERROR!' : v;
+            } catch (e) {
+                resolved = '#VALUE!';
+            }
+        }
+        const style = params.data[col.field + '_style'] || {};
+        snapshot[col.field] = formatLikeCell(resolved, style);
+    });
+    emit('row-inspect', snapshot);
 };
 
 const onCellValueChanged = (event) => {
@@ -928,6 +991,7 @@ const finalColumnDefs = computed(() => {
             @cell-mouse-down="onCellMouseDown"
             @cell-mouse-over="onCellMouseOver"
             @cell-context-menu="onCellContextMenu"
+            @cell-double-clicked="onCellDoubleClicked"
             @body-scroll="onBodyScroll"
             @column-resized="onColumnResized"
             @keydown="onGridKeyDown"
@@ -936,6 +1000,7 @@ const finalColumnDefs = computed(() => {
             :rowHeight="25"
             :getRowHeight="getRowHeight"
             :suppressRowTransform="true"
+            :suppressClickEdit="true"
         />
     </div>
 </template>
