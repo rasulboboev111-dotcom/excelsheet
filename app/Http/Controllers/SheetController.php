@@ -224,6 +224,10 @@ class SheetController extends Controller
             'rows'              => 'required|array|max:' . self::MAX_UPDATE_ROWS,
             'rows.*.row_index'  => 'required|integer|min:0|max:' . self::MAX_ROW_INDEX,
             'rows.*.data'       => 'required|array|max:' . self::MAX_IMPORT_COLS,
+            // Комментарий-обоснование для не-админа при ИЗМЕНЕНИИ существующих
+            // ячеек (см. валидацию ниже после расчёта diff). Для пустых→значение
+            // (добавление) и для админа — необязателен.
+            'comment'           => 'nullable|string|max:2000',
         ]);
 
         // Карта field → headerName (имя колонки, которое видит пользователь)
@@ -242,6 +246,11 @@ class SheetController extends Controller
         // Diff-аккумуляторы: total — реальный счётчик (всё, что изменилось),
         // sample — capped массив для лога (чтобы при 50k правок не сожрать всю память).
         $totalChanges = 0;
+        // Отдельно считаем «модификации» — правки НЕ-пустых старых значений.
+        // Заполнение пустой ячейки = «добавление», комментарий не требуется.
+        // Изменение/очистка непустой ячейки = «модификация», комментарий обязателен
+        // для не-админа (валидируется после цикла).
+        $modificationCount = 0;
         $changes = []; // [{ row, col, col_name, old, new }, …]
         $sampleLimit = self::AUDIT_SAMPLE_LIMIT;
 
@@ -279,8 +288,13 @@ class SheetController extends Controller
                 $oldVal = $oldData[$field] ?? null;
                 $newVal = $clean[$field] ?? null;
                 // Нормализуем перед сравнением: "5" === 5, "" === null и т.п.
-                if ($this->normalizeCellValue($oldVal) === $this->normalizeCellValue($newVal)) continue;
+                $normOld = $this->normalizeCellValue($oldVal);
+                $normNew = $this->normalizeCellValue($newVal);
+                if ($normOld === $normNew) continue;
                 $totalChanges++;
+                // Старое значение НЕ пустое → это модификация (правка/удаление существующих
+                // данных), а не чистое добавление. Триггерит требование комментария.
+                if ($normOld !== null) $modificationCount++;
                 if (count($changes) < $sampleLimit) {
                     $changes[] = [
                         'row'      => $rowIndex + 1, // человеко-читаемая нумерация с 1
@@ -303,7 +317,28 @@ class SheetController extends Controller
             ];
         }
 
+        // Не-админ обязан указать причину при ИЗМЕНЕНИИ существующих данных.
+        // Чистые добавления (пустая ячейка → значение) комментария не требуют.
+        // Этот guard срабатывает ДО upsert: правка не уходит в БД, фронт получит 422.
+        $comment = trim((string) ($payload['comment'] ?? ''));
+        if ($modificationCount > 0 && $comment === '' && !Sheet::userIsAdmin(Auth::user())) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'comment' => 'Укажите причину изменения существующих данных.',
+            ]);
+        }
+
         if (!empty($upsertRows)) {
+            // Дедуп по (sheet_id, row_index). PG ON CONFLICT DO UPDATE не умеет
+            // обработать два INSERT-а с одним конфликт-ключом в одном statement —
+            // падает с cardinality violation (21000). Если фронт прислал дубли
+            // (например, при реактивных заменах ссылок в очереди sync'а), оставляем
+            // последнюю запись — она самая свежая по порядку поступления.
+            $deduped = [];
+            foreach ($upsertRows as $r) {
+                $deduped[$r['sheet_id'] . ':' . $r['row_index']] = $r;
+            }
+            $upsertRows = array_values($deduped);
+
             // Один SQL вместо N. Conflict-key совпадает с UNIQUE(sheet_id, row_index).
             // На вставке заполняются created_at/updated_at; на конфликте — обновляются row_data
             // и updated_at (created_at не трогаем).
@@ -317,10 +352,12 @@ class SheetController extends Controller
         // Лог пишем ТОЛЬКО если реально менялось хоть одно значение.
         // Стилевые правки (жирный/цвет) в журнал не попадают — это шум.
         if ($totalChanges > 0) {
-            $this->logAudit('cell_edit', $sheet->id, [
+            $details = [
                 'cells_changed' => $totalChanges,                  // реальное число (не из обрезанного sample)
                 'sample'        => array_slice($changes, 0, 20),    // первые 20 для UI журнала
-            ]);
+            ];
+            if ($comment !== '') $details['comment'] = $comment;
+            $this->logAudit('cell_edit', $sheet->id, $details);
         }
 
         return back();

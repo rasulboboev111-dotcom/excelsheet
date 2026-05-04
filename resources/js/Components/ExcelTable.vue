@@ -1001,6 +1001,7 @@ const finalColumnDefs = computed(() => {
             :getRowHeight="getRowHeight"
             :suppressRowTransform="true"
             :suppressClickEdit="true"
+            :stopEditingWhenCellsLoseFocus="true"
         />
     </div>
 </template>

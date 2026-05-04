@@ -211,6 +211,11 @@ const paginationLabel = (raw) => {
                                                 (показаны первые {{ log.details.sample.length }})
                                             </span>
                                         </div>
+                                        <!-- Причина изменения (для не-админа обязательна; для системных операций
+                                             вроде сортировки/вставки строк — служебная подпись). -->
+                                        <div v-if="log.details.comment" class="mb-2 p-2 bg-amber-50 border-l-4 border-amber-400 text-[11px] text-gray-800">
+                                            <span class="font-semibold text-amber-900">Причина: </span>{{ log.details.comment }}
+                                        </div>
                                         <table class="border border-gray-200 rounded text-[11px] w-full">
                                             <thead class="bg-gray-50 text-gray-600">
                                                 <tr>

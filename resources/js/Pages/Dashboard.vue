@@ -72,12 +72,38 @@ const pendingFormatPainter = ref(null);
 // чтобы при правках в таблице снимок оставался стабильным до следующего dbl-click.
 const inspectedRow = ref(null);
 
+// Снимок tableData в виде, КОТОРОМ ОН СЕЙЧАС НА СЕРВЕРЕ. Обновляется
+// после каждой успешной отправки (selective и full). Нужен для двух вещей:
+//   1) определять «модификации» (старое значение не пусто, новое отличается)
+//      перед сохранением — и требовать комментарий у не-админа;
+//   2) откатывать локальные правки, если юзер нажал «Отмена» в модалке.
+// Хранится позиционно — индекс в массиве совпадает с tableData.value[i].
+let _serverSnapshot = JSON.parse(JSON.stringify(props.initialData || []));
+const refreshServerSnapshot = () => {
+    _serverSnapshot = JSON.parse(JSON.stringify(tableData.value));
+};
+
+// Модалка «Причина изменения» — для не-админа при правке непустых ячеек.
+// Появляется ОДИН раз на пачку (auto-save debounce 400ms собирает все правки).
+const commentDialog = reactive({
+    show: false,
+    comment: '',
+    error: '',
+    changes: [],          // [{ row, col_name, oldVal, newVal }] — для вывода списка
+    pendingPayload: null, // отложенный payload для повторного _flushPendingSync(comment)
+});
+
 // --- Sheet meta (merges, validations, colWidths, rowHeights, hidden) ---
 const activeSheetId = computed(() => props.activeSheet?.id);
 const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId);
 
 // При смене листа закрываем панель просмотра строки — снимок принадлежал старому листу.
 watch(activeSheetId, () => { inspectedRow.value = null; });
+
+// initialData меняется при Inertia partial-reload (например, после успешного сохранения).
+// Подтягиваем snapshot, чтобы сравнение «было/стало» в diff'е считалось от актуального
+// серверного состояния — иначе после reload-а старые правки могут показаться «новыми».
+watch(() => props.initialData, () => { refreshServerSnapshot(); });
 
 // --- Zoom (как в Excel: ползунок справа снизу, Ctrl+колесо, диалог по клику на проценты) ---
 const ZOOM_MIN = 25;
@@ -179,7 +205,17 @@ const applySortFromDialog = () => {
     });
     tableData.value = [...head, ...body];
     const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-    router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+    // Сортировка переставляет существующие строки → каждый row_index формально меняет
+    // содержимое. Чтобы не требовать комментарий у не-админа на каждую сортировку,
+    // подкладываем системный комментарий — он попадёт в журнал аудита.
+    router.post(route('sheets.updateData', props.activeSheet.id), {
+        rows: allRows,
+        comment: `Сортировка по «${columnDefs.value.find(c => c.field === col)?.headerName || col}» (${sortDialog.value.order === 'desc' ? 'убыв.' : 'возр.'})`,
+    }, {
+        preserveScroll: true,
+        preserveState: true,
+        onSuccess: () => refreshServerSnapshot(),
+    });
     tableApi.value?.refreshCells({ force: true });
 };
 
@@ -616,36 +652,111 @@ const saveStatusTooltip = computed(() => {
 });
 
 // Сборка тела запроса из буфера. Возвращает {url, payload} или null если нечего слать.
+//
+// КРИТИЧНО: дедупим по row_index через Map. _pendingSyncRows — это Set ссылок,
+// и при реактивных заменах в tableData (Inertia preserveState + обновление initialData)
+// в Set могут осесть старая и новая ссылки на одну и ту же строку. Если отправить
+// обе с одинаковым row_index, PG падает на ON CONFLICT с cardinality violation.
+// Поэтому всегда берём актуальное содержимое из tableData.value[idx] — оно
+// «живое» и содержит все последние правки.
 const _buildSyncPayload = () => {
     if (_pendingSyncRows.size === 0) return null;
     if (!props.activeSheet?.id) { _pendingSyncRows.clear(); return null; }
     const rowsToSync = Array.from(_pendingSyncRows);
     _pendingSyncRows.clear();
-    const updatedRows = [];
+    const byRowIndex = new Map();
     rowsToSync.forEach(row => {
         let idx = tableData.value.indexOf(row);
-        if (idx === -1) idx = tableData.value.findIndex(r => r.id === row.id);
-        if (idx !== -1) updatedRows.push({ row_index: idx, data: row });
+        if (idx === -1 && row?.id != null) idx = tableData.value.findIndex(r => r.id === row.id);
+        if (idx !== -1) {
+            // Перезаписываем актуальной ссылкой из tableData — старая stale-ссылка
+            // могла потерять часть полей при реактивной замене объекта строки.
+            byRowIndex.set(idx, tableData.value[idx]);
+        }
     });
-    if (updatedRows.length === 0) return null;
+    if (byRowIndex.size === 0) return null;
+    const updatedRows = [];
+    byRowIndex.forEach((row, row_index) => {
+        updatedRows.push({ row_index, data: row });
+    });
     return {
         url: route('sheets.updateData', props.activeSheet.id),
         rows: updatedRows,
     };
 };
 
+// Нормализация значения для сравнения «было/стало» (зеркало backend normalizeCellValue).
+// null/''/whitespace → null; число-строка → float; остальное как есть.
+const _normalizeForCompare = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'string') {
+        const t = v.trim();
+        if (t === '') return null;
+        if (/^-?\d+([.,]\d+)?$/.test(t)) return parseFloat(t.replace(',', '.'));
+        return t;
+    }
+    if (typeof v === 'number') return v;
+    return v;
+};
+
+// Считает diff между _serverSnapshot и текущим payload. Возвращает список модификаций
+// (старое значение НЕ пусто и отличается от нового). Чистые добавления исключаются.
+const _detectModifications = (payloadRows) => {
+    const mods = [];
+    payloadRows.forEach(({ row_index, data }) => {
+        const snap = _serverSnapshot[row_index] || {};
+        const fields = new Set([...Object.keys(data || {}), ...Object.keys(snap)]);
+        fields.forEach(field => {
+            if (field.endsWith('_style')) return;
+            const oldN = _normalizeForCompare(snap[field]);
+            const newN = _normalizeForCompare((data || {})[field]);
+            if (oldN === newN) return;
+            if (oldN === null) return; // пустое → значение = добавление, без комментария
+            const colDef = columnDefs.value.find(c => c.field === field);
+            mods.push({
+                row: row_index + 1,
+                col_name: colDef?.headerName || field,
+                col: field,
+                oldVal: snap[field],
+                newVal: (data || {})[field],
+            });
+        });
+    });
+    return mods;
+};
+
 // Обычный flush через Inertia: с preserveState, обновляет props в случае ответа.
-const _flushPendingSync = () => {
+// Если юзер не админ и в пачке есть «модификации» (правки непустых ячеек),
+// показываем модалку «Причина изменения» — без комментария на сервер ничего не уходит.
+const _flushPendingSync = (commentText = null) => {
     if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
     const p = _buildSyncPayload();
     if (!p) return;
+
+    // Перехват для не-админа: если есть модификации и нет комментария — модалка.
+    if (commentText === null && !props.isAdmin) {
+        const mods = _detectModifications(p.rows);
+        if (mods.length > 0) {
+            commentDialog.changes = mods;
+            commentDialog.comment = '';
+            commentDialog.error = '';
+            commentDialog.pendingPayload = p;
+            commentDialog.show = true;
+            saveStatus.value = 'saving';
+            return;
+        }
+    }
+
     saveStatus.value = 'saving';
-    router.post(p.url, { rows: p.rows }, {
+    const body = { rows: p.rows };
+    if (commentText) body.comment = commentText;
+    router.post(p.url, body, {
         preserveScroll: true,
         preserveState: true,
         onSuccess: () => {
-            // Если за время запроса набежали новые правки — статус останется 'saving',
-            // следующий flush его сбросит. Иначе фиксируем 'saved'.
+            // После успешной записи на сервере наш snapshot догоняем до текущего tableData,
+            // чтобы следующий diff считался от актуального серверного состояния.
+            refreshServerSnapshot();
             if (_pendingSyncRows.size === 0) {
                 saveStatus.value = 'saved';
                 lastSavedAt.value = new Date();
@@ -657,6 +768,62 @@ const _flushPendingSync = () => {
             lastSaveError.value = (errors && Object.values(errors)[0]) || 'Сетевая ошибка';
         },
     });
+};
+
+// «Сохранить» в модалке: отправляем payload с комментарием.
+const submitCommentDialog = () => {
+    const text = (commentDialog.comment || '').trim();
+    if (text === '') {
+        commentDialog.error = 'Введите причину изменения.';
+        return;
+    }
+    const p = commentDialog.pendingPayload;
+    commentDialog.show = false;
+    commentDialog.pendingPayload = null;
+    if (!p) return;
+    saveStatus.value = 'saving';
+    router.post(p.url, { rows: p.rows, comment: text }, {
+        preserveScroll: true,
+        preserveState: true,
+        onSuccess: () => {
+            refreshServerSnapshot();
+            if (_pendingSyncRows.size === 0) {
+                saveStatus.value = 'saved';
+                lastSavedAt.value = new Date();
+                lastSaveError.value = '';
+            }
+        },
+        onError: (errors) => {
+            saveStatus.value = 'error';
+            lastSaveError.value = (errors && Object.values(errors)[0]) || 'Сетевая ошибка';
+            // Если бэк вернул именно про комментарий — снова открыть модалку с этим текстом.
+            if (errors?.comment) {
+                commentDialog.error = errors.comment;
+                commentDialog.comment = text;
+                commentDialog.pendingPayload = p;
+                commentDialog.show = true;
+            }
+        },
+    });
+};
+
+// «Отмена» в модалке: НЕ трогаем tableData, только возвращаем строки в очередь.
+// Юзер увидит статус «не сохранено: нужна причина», впечатанные значения и стили
+// остаются на экране. При следующей правке debounce снова запустит flush → модалка
+// откроется заново со всем накопленным diff'ом. Если юзер хочет реально откатить —
+// делает Ctrl+Z (undo стек заполняется на каждое действие).
+const cancelCommentDialog = () => {
+    const p = commentDialog.pendingPayload;
+    commentDialog.show = false;
+    commentDialog.pendingPayload = null;
+    if (p) {
+        p.rows.forEach(({ row_index }) => {
+            const tr = tableData.value[row_index];
+            if (tr) _pendingSyncRows.add(tr);
+        });
+    }
+    saveStatus.value = 'error';
+    lastSaveError.value = 'Укажите причину изменения существующих данных, чтобы сохранить.';
 };
 
 // «Гарантированная» доставка для unload / Inertia 'before'-навигации:
@@ -807,22 +974,44 @@ const handleCellValueChanged = (event) => {
 
     const { data, node, oldValue, column } = event;
 
+    // ВАЖНО: AG-Grid v32+ держит СВОЮ копию строки в rowNode.data (она не === tableData[i]).
+    // Поэтому сначала мерджим правку из AG-Grid в нашу каноническую строку tableData[ri],
+    // а уже потом кладём в pending именно нашу ссылку. Иначе:
+    //   1) styles/ribbon-правки идут в tableData[i], а value-правки — в копию AG-Grid;
+    //   2) при flush'е в pending Set попадают ДВЕ разных ссылки → дубль row_index → 500.
+    let rowIndex = node?.rowIndex ?? node?.row_index;
+    if (node?.rowPinned === 'top') {
+        rowIndex = 0;
+    } else if (sheetMeta.value?.freezeRow) {
+        rowIndex = (rowIndex ?? -1) + 1;
+    }
+    if (rowIndex == null || rowIndex < 0) rowIndex = tableData.value.indexOf(data);
+
+    let canonicalRow = (rowIndex >= 0) ? tableData.value[rowIndex] : null;
+    if (!canonicalRow && data?.id != null) {
+        const found = tableData.value.findIndex(r => r && r.id === data.id);
+        if (found !== -1) { rowIndex = found; canonicalRow = tableData.value[found]; }
+    }
+
+    if (canonicalRow && canonicalRow !== data) {
+        // Переносим в нашу строку только новое значение поля (не весь data — чтобы
+        // не затереть наши локальные правки стилей более старой копией AG-Grid'а).
+        const field = column?.getColId?.();
+        if (field) canonicalRow[field] = data[field];
+    }
+
+    const syncRow = canonicalRow || data;
+
     // НЕ сохраняем в Undo, если это само действие Undo/Redo
     if (column && oldValue !== undefined && !isUndoing.value) {
         const field = column.getColId();
         saveUndoState([{
-            dataRef: data, field, oldValue,
-            oldStyle: data[field + '_style'] ? JSON.parse(JSON.stringify(data[field + '_style'])) : null
+            dataRef: syncRow, field, oldValue,
+            oldStyle: syncRow[field + '_style'] ? JSON.parse(JSON.stringify(syncRow[field + '_style'])) : null
         }]);
     }
-    let rowIndex = node?.rowIndex ?? node?.row_index;
-    if (rowIndex == null || rowIndex < 0) {
-        // fallback: ищем по ссылке в полном tableData
-        rowIndex = tableData.value.indexOf(data);
-    }
     if (rowIndex >= 0) {
-        // В общую дебаунс-очередь — единый канал записи на сервер.
-        syncChangesToServer([data]);
+        syncChangesToServer([syncRow]);
     }
 };
 
@@ -891,6 +1080,12 @@ const handleRibbonAction = ({ type, value }) => {
     } else if (!props.canEdit) {
         return;
     }
+
+    // КРИТИЧНО: закоммитить активный редактор ячейки ДО любого ribbon-действия.
+    // Иначе если юзер набрал текст в ячейку и не нажал Enter, клик по кнопке
+    // в ленте отбросит ввод (потеря данных). stopEditing(false) принудительно
+    // зафиксирует значение через cellValueChanged-event.
+    try { tableApi.value?.stopEditing(false); } catch (_) {}
 
     // Глобальные действия, которые не требуют активной ячейки
     if (type === 'import') { triggerImport(); return; }
@@ -1048,7 +1243,17 @@ const handleRibbonAction = ({ type, value }) => {
         // Сдвиг merges и rowHeights, чтобы они не "уехали" относительно данных.
         shiftMetaRowsOnInsert(at);
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+        // Вставка строки сдвигает row_index у нижестоящих → backend увидит много
+        // «модификаций». Чтобы не требовать комментарий у не-админа, кладём
+        // системный комментарий — он попадёт в журнал.
+        router.post(route('sheets.updateData', props.activeSheet.id), {
+            rows: allRows,
+            comment: `Вставка строки на позиции ${at + 1}`,
+        }, {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => refreshServerSnapshot(),
+        });
         tableApi.value?.refreshCells({ force: true });
         return;
     }
@@ -1059,7 +1264,15 @@ const handleRibbonAction = ({ type, value }) => {
         tableData.value.splice(activeRow, 1);
         shiftMetaRowsOnDelete(activeRow);
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-        router.post(route('sheets.updateData', props.activeSheet.id), { rows: allRows }, { preserveScroll: true, preserveState: true });
+        // Удаление строки тоже структурное изменение — системный комментарий.
+        router.post(route('sheets.updateData', props.activeSheet.id), {
+            rows: allRows,
+            comment: `Удаление строки ${activeRow + 1}`,
+        }, {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => refreshServerSnapshot(),
+        });
         tableApi.value?.refreshCells({ force: true });
         return;
     }
@@ -2001,6 +2214,52 @@ onUnmounted(() => {
                         </table>
                     </div>
                     <div class="p-4 border-t text-right"><button @click="showPermissionsModal = false" class="px-4 py-2 bg-gray-200 rounded text-sm font-semibold">Закрыть</button></div>
+                </div>
+            </div>
+
+            <!-- Модалка «Причина изменения» — показывается не-админу при правке/очистке
+                 непустых ячеек. Без комментария save отменяется и правки откатываются. -->
+            <div v-if="commentDialog.show" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+                    <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
+                        <h3 class="font-bold text-gray-800">Причина изменения</h3>
+                        <button @click="cancelCommentDialog" class="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500" title="Отмена">✕</button>
+                    </div>
+                    <div class="px-5 py-3 overflow-y-auto flex-1">
+                        <p class="text-sm text-gray-600 mb-3">
+                            Вы изменяете данные в существующих ячейках. Укажите причину — она попадёт в журнал аудита.
+                        </p>
+                        <div class="border border-gray-200 rounded mb-3 max-h-56 overflow-y-auto">
+                            <table class="w-full text-[11px]">
+                                <thead class="bg-gray-50 text-gray-600 sticky top-0">
+                                    <tr>
+                                        <th class="px-2 py-1 text-left w-12">Строка</th>
+                                        <th class="px-2 py-1 text-left">Колонка</th>
+                                        <th class="px-2 py-1 text-left">Было</th>
+                                        <th class="px-2 py-1 text-left">Стало</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(c, i) in commentDialog.changes" :key="i" class="border-t">
+                                        <td class="px-2 py-1 text-gray-600">{{ c.row }}</td>
+                                        <td class="px-2 py-1 font-medium">{{ c.col_name }}</td>
+                                        <td class="px-2 py-1 text-red-700 line-through truncate max-w-[160px]" :title="String(c.oldVal ?? '')">{{ c.oldVal ?? '' }}</td>
+                                        <td class="px-2 py-1 text-green-700 truncate max-w-[160px]" :title="String(c.newVal ?? '')">{{ c.newVal ?? '' }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Причина</label>
+                        <textarea v-model="commentDialog.comment" rows="3" maxlength="2000"
+                                  class="w-full border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                  placeholder="Например: исправление опечатки, обновлённые данные от заказчика…"
+                                  @keydown.ctrl.enter="submitCommentDialog"></textarea>
+                        <div v-if="commentDialog.error" class="text-xs text-red-600 mt-1">{{ commentDialog.error }}</div>
+                    </div>
+                    <div class="px-5 py-3 border-t border-gray-200 flex justify-end gap-2">
+                        <button @click="cancelCommentDialog" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-sm font-semibold text-gray-700">Отмена</button>
+                        <button @click="submitCommentDialog" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-semibold text-white">Сохранить</button>
+                    </div>
                 </div>
             </div>
 
