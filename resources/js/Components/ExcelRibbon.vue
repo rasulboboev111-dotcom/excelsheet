@@ -147,7 +147,6 @@ const icons = {
     bucket: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 10L9 5L14 10L9 15L4 10Z" fill="#ffff00" stroke="#333"/><path d="M14 10L16 12L15 13L13 11" stroke="#333"/></svg>`,
     sum: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4H12L7 8L12 12H4" stroke="#333" stroke-width="2" stroke-linejoin="round"/></svg>`,
     clear: `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 6h10l-1 8H4L3 6z" fill="#fde7e9" stroke="#a4262c"/><path d="M2 4h12M6 4v2M10 4v2" stroke="#a4262c" stroke-width="1.2"/></svg>`,
-    sort: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4L2 6M4 4L6 6M4 4V12M10 4H14M10 8H13M10 12H12" stroke="#333" stroke-width="1.5"/></svg>`,
     find: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4" stroke="#333" stroke-width="1.5"/><path d="M10 10L13 13" stroke="#333" stroke-width="2"/></svg>`,
     cellStyle: `<svg width="28" height="28" viewBox="0 0 32 32"><rect x="4" y="4" width="24" height="24" fill="#f3f2f1" stroke="#333"/><rect x="10" y="10" width="12" height="12" fill="#fff" stroke="#0078d4"/></svg>`,
     insertRow: `<svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="#dff6dd"/><path d="M12 7v10M7 12h10" stroke="#107c10" stroke-width="2" stroke-linecap="round"/></svg>`,
@@ -492,9 +491,6 @@ const icons = {
                         </div>
                     </div>
                     <div class="btn-stack">
-                        <button class="btn-mini" @click="handleAction('sort')">
-                            <span v-html="icons.sort"></span> Сортировка
-                        </button>
                         <button class="btn-mini" @click="handleAction('find')">
                             <span v-html="icons.find"></span> Найти
                         </button>

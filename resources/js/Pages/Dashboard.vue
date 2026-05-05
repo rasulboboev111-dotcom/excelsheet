@@ -198,39 +198,9 @@ const submitSendEmail = async () => {
     }
 };
 
-// === Sort dialog ===
-const sortDialog = ref({ show: false, column: null, order: 'asc' });
-const applySortFromDialog = () => {
-    const col = sortDialog.value.column;
-    const dir = sortDialog.value.order === 'desc' ? -1 : 1;
-    sortDialog.value.show = false;
-    if (!col) return;
-    const num = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return isNaN(n) ? null : n; };
-    // Если первая строка закреплена — не вовлекаем её в сортировку, она остаётся шапкой.
-    const frozen = !!sheetMeta.value?.freezeRow;
-    const head = frozen && tableData.value.length > 0 ? [tableData.value[0]] : [];
-    const body = frozen ? tableData.value.slice(1) : tableData.value.slice();
-    body.sort((a, b) => {
-        const va = a[col], vb = b[col];
-        const na = num(va), nb = num(vb);
-        if (na !== null && nb !== null) return (na - nb) * dir;
-        return String(va ?? '').localeCompare(String(vb ?? ''), 'ru') * dir;
-    });
-    tableData.value = [...head, ...body];
-    const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-    // Сортировка переставляет существующие строки → каждый row_index формально меняет
-    // содержимое. Чтобы не требовать комментарий у не-админа на каждую сортировку,
-    // подкладываем системный комментарий — он попадёт в журнал аудита.
-    router.post(route('sheets.updateData', props.activeSheet.id), {
-        rows: allRows,
-        comment: `Сортировка по «${columnDefs.value.find(c => c.field === col)?.headerName || col}» (${sortDialog.value.order === 'desc' ? 'убыв.' : 'возр.'})`,
-    }, {
-        preserveScroll: true,
-        preserveState: true,
-        onSuccess: () => refreshServerSnapshot(),
-    });
-    tableApi.value?.refreshCells({ force: true });
-};
+// Сортировка убрана из ленты по требованию: переставляла строки целиком,
+// делала diff-аудит шумным и провоцировала комментарии для не-админа.
+// Если когда-нибудь понадобится — историю восстанавливать из git.
 
 // === Fill (Down/Up/Right/Left) ===
 const applyFill = (dir) => {
@@ -1142,18 +1112,6 @@ const handleRibbonAction = ({ type, value }) => {
     if (type === 'findReplace') { openFindReplace(); return; }
     // === Найти — открывает Find&Replace независимо от выделения ===
     if (type === 'find') { openFindReplace(); return; }
-
-    // === Сортировка — открывает диалог независимо от выделения ===
-    if (type === 'sort') {
-        const colDefault = activeCellInfo.value.colId || columnDefs.value[0]?.field;
-        sortDialog.value = { show: true, column: colDefault, order: 'asc' };
-        return;
-    }
-    if (type === 'sort-asc' || type === 'sort-desc') {
-        sortDialog.value = { show: true, column: activeCellInfo.value.colId || columnDefs.value[0]?.field, order: type === 'sort-desc' ? 'desc' : 'asc' };
-        applySortFromDialog();
-        return;
-    }
 
     // === Формат (Cells group): высота строки / ширина колонки — корректно сообщит о невыделенной ячейке ===
     if (type === 'format-rowHeight' || type === 'format-colWidth') {
@@ -2521,38 +2479,6 @@ onUnmounted(() => {
                 <div class="flex justify-end gap-2">
                     <button @click="showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300">Отмена</button>
                     <button @click="setZoom(zoomDialogValue); showZoomDialog = false" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">ОК</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Диалог "Сортировка" -->
-        <div v-if="sortDialog.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30" @click.self="sortDialog.show = false">
-            <div class="bg-white rounded-lg shadow-xl w-[360px] p-4">
-                <h3 class="font-bold text-sm mb-3">Сортировка</h3>
-                <div class="space-y-3 text-sm">
-                    <div>
-                        <label class="block text-xs text-gray-600 mb-1">Сортировать по столбцу</label>
-                        <select v-model="sortDialog.column" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                            <option v-for="c in columnDefs" :key="c.field" :value="c.field">{{ c.headerName || c.field }}</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-xs text-gray-600 mb-1">Порядок</label>
-                        <div class="flex gap-3">
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" v-model="sortDialog.order" value="asc" /> По возрастанию (А→Я / 0→9)
-                            </label>
-                        </div>
-                        <div class="flex gap-3 mt-1">
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" v-model="sortDialog.order" value="desc" /> По убыванию (Я→А / 9→0)
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                <div class="mt-4 flex justify-end gap-2">
-                    <button @click="sortDialog.show = false" class="px-3 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300">Отмена</button>
-                    <button @click="applySortFromDialog" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">Сортировать</button>
                 </div>
             </div>
         </div>
