@@ -14,12 +14,17 @@ const vFocus = {
 };
 
 // Глубокое копирование. structuredClone — нативный API (Chrome 98+, FF 94+,
-// Safari 15.4+, Edge 98+), на больших массивах в 2-3× быстрее
-// JSON.parse(JSON.stringify()). Fallback на старый способ для древних браузеров,
-// чтобы ничего не сломать.
-const deepClone = typeof structuredClone === 'function'
-    ? (v) => structuredClone(v)
-    : (v) => deepClone(v);
+// Safari 15.4+, Edge 98+), на больших массивах в 2-3× быстрее JSON-сериализации.
+//
+// ВАЖНО: structuredClone бросает DataCloneError на:
+//   - Vue-реактивных Proxy (props.initialData приходит как Proxy);
+//   - функциях, DOM-узлах, классах с приватными полями.
+// Поэтому всегда оборачиваем try/catch и в fallback используем JSON-клонирование —
+// оно «видит сквозь» Proxy и для плоских данных таблицы работает гарантированно.
+const _jsonClone = (v) => JSON.parse(JSON.stringify(v));
+const deepClone = (typeof structuredClone === 'function')
+    ? (v) => { try { return structuredClone(v); } catch (_) { return _jsonClone(v); } }
+    : _jsonClone;
 
 const props = defineProps({
     sheets: Array,
