@@ -21,44 +21,60 @@ COPY database/ ./database/
 COPY public/index.php ./public/
 COPY routes/ ./routes/
 COPY storage/ ./storage/
+# Игнорируем platform-requirements: composer:2.7 image не содержит часть
+# нужных расширений (ext-gd, ext-intl, ext-pdo_pgsql и др.), но в финальном
+# app-образе (php:8.2-fpm-alpine с docker-php-ext-install) они все есть.
+# Здесь composer только разрешает зависимости и скачивает пакеты — для этого
+# реальные расширения не нужны.
 RUN composer install \
         --no-dev \
         --optimize-autoloader \
         --no-interaction \
         --no-progress \
         --prefer-dist \
-        --no-scripts
+        --no-scripts \
+        --ignore-platform-reqs
 
 # ============================================================
 # Stage 2: Сборка фронта (Vite)
 # ============================================================
+# resources/js/app.js импортит ZiggyVue из ../../vendor/tightenco/ziggy —
+# это PHP-пакет от Tighten, у которого внутри лежит JS-исходник для Vite.
+# Поэтому в node-стадию нужно занести vendor/ ИЗ composer-стадии,
+# иначе RollupError: Could not resolve "../../vendor/tightenco/ziggy".
 FROM node:20-alpine AS node-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY postcss.config.js tailwind.config.js vite.config.js jsconfig.json ./
 COPY resources/ ./resources/
+COPY --from=composer-deps /app/vendor ./vendor
 RUN npm run build
 
 # ============================================================
 # Stage 3: Финальный app-образ (PHP-FPM)
 # ============================================================
-FROM php:8.2-fpm-alpine AS app
+# Debian-вариант (bookworm), а не alpine — на нём расширения собираются
+# из готовых apt-пакетов с dev-headers, без компиляции из исходников.
+# Используем install-php-extensions (https://github.com/mlocati/docker-php-extension-installer)
+# — это de-facto стандарт для официального PHP-образа: один шаг, всё что
+# нужно подтянет автоматически. В Alpine компиляция занимала 15-30 минут,
+# тут — 1-2 минуты.
+FROM php:8.2-fpm-bookworm AS app
 
-# Системные зависимости + PHP-экстеншены.
-RUN apk add --no-cache \
-        postgresql-dev \
-        libzip-dev \
-        icu-dev \
-        libpng-dev \
-        oniguruma-dev \
-        libxml2-dev \
-        zip \
-        unzip \
+# Системные утилиты + install-php-extensions.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
         git \
-        bash \
+        unzip \
+        zip \
         tini \
-    && docker-php-ext-install -j"$(nproc)" \
+    && curl -sSLo /usr/local/bin/install-php-extensions \
+        https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions \
+    && chmod +x /usr/local/bin/install-php-extensions \
+    && install-php-extensions \
         pdo_pgsql \
         bcmath \
         zip \
@@ -68,9 +84,9 @@ RUN apk add --no-cache \
         mbstring \
         exif \
         pcntl \
-    && pecl install redis \
-    && docker-php-ext-enable redis \
-    && rm -rf /var/cache/apk/*
+        redis \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # PHP конфиги — наш php.ini + agressive OPcache.
 COPY docker/php/php.ini      /usr/local/etc/php/conf.d/zz-app.ini
@@ -93,7 +109,8 @@ COPY docker/php/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 9000
-ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+# tini в Debian apt-пакете лежит в /usr/bin/tini (на Alpine было /sbin/tini).
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["php-fpm", "--nodaemonize"]
 
 # ============================================================
