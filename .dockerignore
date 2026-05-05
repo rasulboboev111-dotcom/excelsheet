@@ -1,0 +1,59 @@
+# Что НЕ копировать в build-контекст Docker (ускоряет сборку и держит образ маленьким).
+
+# Зависимости — пересобираются внутри stages
+node_modules
+vendor
+
+# Артефакты сборки — public/build пересобирается в node-stage
+public/build
+public/hot
+
+# Локальный софт (только для dev-машины)
+.nginx
+.redis
+
+# Git и редакторы
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.editorconfig
+
+# Локальные конфиги/секреты — НЕ копируем в образ
+.env
+.env.backup
+.env.local
+.env.docker.example
+
+# Кэши и логи
+storage/logs/*.log
+storage/framework/cache/data
+storage/framework/sessions
+storage/framework/views
+storage/framework/testing
+bootstrap/cache/*.php
+.phpunit.result.cache
+
+# Документация и тесты не нужны в проде
+docs
+tests
+phpunit.xml
+DEPLOY.md
+README.md
+
+# Bat-скрипты Windows
+*.bat
+
+# Резервы php.ini и т.п.
+*.bak
+*.bak.*
+
+# Misc
+temp_xlsx
+temp.zip
+get_sheets.php
+import_excel.php
+peek_data.php
+*.xlsx
+.claude

@@ -1,0 +1,142 @@
+# Production-ready docker-compose для Excel Tojiktelecom.
+#
+# Запуск:
+#   1. cp .env.docker.example .env
+#   2. nano .env   # заполнить пароли и APP_URL
+#   3. docker compose up -d --build
+#
+# Управление:
+#   docker compose logs -f app          # логи Laravel
+#   docker compose exec app bash        # shell в контейнере
+#   docker compose exec app php artisan tinker
+#   docker compose down                 # остановить (данные сохраняются в volumes)
+#   docker compose down -v              # ОПАСНО: удалить и базу с редисом тоже
+
+services:
+  # =====================================================
+  # PHP-FPM приложение
+  # =====================================================
+  app:
+    build:
+      context: .
+      target: app
+    image: excel-app:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Перебиваем хосты на compose-имена (контейнеры в одной сети).
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      # storage/ нужно сохранять между перезапусками — туда пишутся логи и временные файлы.
+      - app-storage:/var/www/html/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - excel
+
+  # =====================================================
+  # Nginx — раздаёт статику и проксит PHP на app:9000
+  # =====================================================
+  nginx:
+    build:
+      context: .
+      target: nginx
+    image: excel-nginx:latest
+    restart: unless-stopped
+    ports:
+      # Если ставишь Cloudflare/Traefik перед — биндь только на 127.0.0.1
+      # (например "127.0.0.1:8080:80"), чтобы наружу выйти можно было только через прокси.
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      - app
+    networks:
+      - excel
+
+  # =====================================================
+  # PostgreSQL 16
+  # =====================================================
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-excel_db}
+      POSTGRES_USER: ${DB_USERNAME:-excel_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-excel_user} -d ${DB_DATABASE:-excel_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - excel
+
+  # =====================================================
+  # Redis 7 (cache + sessions)
+  # =====================================================
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save ""
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - excel
+
+  # =====================================================
+  # Laravel scheduler — запускает audit-log:cleanup и любые
+  # будущие cron-задачи. Просто бесконечный цикл `schedule:run`.
+  # =====================================================
+  scheduler:
+    image: excel-app:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - app-storage:/var/www/html/storage
+    depends_on:
+      app:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Не делаем migrate — это уже сделал app-контейнер.
+        echo "[scheduler] starting loop";
+        while true; do
+          php artisan schedule:run >/dev/null 2>&1;
+          sleep 60;
+        done
+    networks:
+      - excel
+
+networks:
+  excel:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  app-storage:
