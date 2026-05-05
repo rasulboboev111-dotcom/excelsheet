@@ -385,7 +385,7 @@ class SheetController extends Controller
         $sheet = DB::transaction(function () {
             self::lockSheetsOrder();
             $maxOrder = (int) Sheet::max('order');
-            return Sheet::create([
+            $newSheet = Sheet::create([
                 'name' => 'Новый лист',
                 'user_id' => Auth::id(),
                 'order' => $maxOrder + 1,
@@ -395,6 +395,16 @@ class SheetController extends Controller
                     ['field' => 'C', 'headerName' => 'C'],
                 ]
             ]);
+            // Owner получает 'editor' явно. Без этого admin-юзер всё равно
+            // прошёл бы canEdit через userIsAdmin-shortcut, так что роль
+            // здесь — на случай, если admin позже снимет себе глобальную
+            // admin-роль и захочет работать с этим листом как обычный editor.
+            // Skip-им если owner = admin: setUserRole для админов запрещён
+            // в SheetPermissionController, держим инвариант.
+            if (!Sheet::userIsAdmin(Auth::user())) {
+                $newSheet->setUserRole(Auth::id(), 'editor');
+            }
+            return $newSheet;
         });
         $this->logAudit('sheet_created', $sheet->id, ['name' => $sheet->name]);
         return redirect()->route('dashboard', ['sheet_id' => $sheet->id]);
@@ -409,9 +419,12 @@ class SheetController extends Controller
     public function importSheet(Request $request)
     {
         // Импорт открыт всем залогиненным юзерам. Импортёр становится owner
-        // (user_id = Auth::id()) и автоматически получает редактирование на свой
-        // лист через Sheet::canEdit() (проверка userRole === 'owner').
-        // Делать его видимым/редактируемым для других юзеров — задача админа.
+        // (user_id = Auth::id()) и сразу получает per-sheet роль 'editor' —
+        // см. setUserRole ниже в транзакции. Это даёт владельцу доступ по
+        // умолчанию, но admin может его отозвать через permissions UI
+        // (раньше owner проскакивал через хардкод-shortcut и admin не мог
+        // ничего сделать). Делать лист видимым/редактируемым для других
+        // юзеров — задача админа.
 
         // 1. Раннее отсечение по Content-Length. К моменту работы метода JSON
         // уже распарсен — это не защита от OOM (её даёт post_max_size в php.ini),
@@ -491,6 +504,12 @@ class SheetController extends Controller
                     'row_index' => (int) $row['row_index'],
                     'row_data'  => $row['data'] ?? [],
                 ]);
+            }
+            // Owner-импортёр получает 'editor' явно, чтобы пройти canEdit без
+            // shortcut'а isOwnedBy. Skip-им если импортёр — admin (роли
+            // админам не назначаются — они проходят через userIsAdmin).
+            if (!Sheet::userIsAdmin(Auth::user())) {
+                $newSheet->setUserRole(Auth::id(), 'editor');
             }
             return $newSheet;
         });

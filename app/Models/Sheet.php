@@ -43,17 +43,18 @@ class Sheet extends Model
     }
 
     /**
-     * Прямой запрос в model_has_roles. Не использует Spatie-relation, потому что
-     * та фильтрует по getPermissionsTeamId() — для перебора нескольких листов это
-     * означает дёрганье setPermissionsTeamId N раз и сброс кэша. Прямой SQL быстрее
-     * и понятнее.
+     * Per-sheet роль из model_has_roles: 'editor' / 'viewer' / null.
+     * Прямой SQL вместо Spatie-relation, потому что Spatie фильтрует по
+     * getPermissionsTeamId() и для перебора N листов потребовал бы N
+     * setPermissionsTeamId + сброс кэша. Здесь же — один запрос.
      *
-     * Возвращает 'owner' / 'editor' / 'viewer' / null.
+     * ВАЖНО: owner НЕ получает «автоматическую» роль. Если admin отозвал
+     * права через UI, owner возвращается со значением null и проходит через
+     * canEdit/canView как обычный не-админ без роли (доступ запрещён).
      */
     public function userRole(?int $userId): ?string
     {
         if ($userId === null) return null;
-        if ($this->isOwnedBy($userId)) return 'owner';
 
         $tableNames  = config('permission.table_names');
         $columnNames = config('permission.column_names');
@@ -84,8 +85,11 @@ class Sheet extends Model
         // hasGlobalRole — наша обёртка над Spatie с правильным сбросом team_id.
         if (self::userIsAdmin($user)) return true;
 
-        if ($this->isOwnedBy($userId)) return true;
-
+        // Owner НЕ получает автоматический доступ через isOwnedBy — admin
+        // должен иметь возможность отозвать права у любого, включая создателя
+        // листа. Owner получает 'editor'-роль явно при создании листа (см.
+        // SheetController::store / importSheet) и теряет её, если admin
+        // переключит на 'viewer'/'none' через permissions UI.
         return $this->userRole($userId) === 'editor';
     }
 
@@ -97,7 +101,6 @@ class Sheet extends Model
         if (!$user) return false;
 
         if (self::userIsAdmin($user)) return true;
-        if ($this->isOwnedBy($userId)) return true;
 
         $role = $this->userRole($userId);
         return $role === 'viewer' || $role === 'editor';

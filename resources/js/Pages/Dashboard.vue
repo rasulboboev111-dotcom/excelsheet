@@ -826,6 +826,36 @@ const cancelCommentDialog = () => {
     lastSaveError.value = 'Укажите причину изменения существующих данных, чтобы сохранить.';
 };
 
+// Есть ли в очереди несохранённых правок такие, которые ТРЕБУЮТ комментарий
+// от не-админа (т.е. модификации непустых ячеек, не чистые добавления)? Если есть —
+// нельзя молча досылать их beacon'ом без `comment`: сервер 422-ит, и юзер
+// потеряет правку, думая что коммент-flow «не работает». В этом случае навигацию
+// блокируем и принудительно открываем модалку.
+const _hasPendingNonAdminMods = () => {
+    if (props.isAdmin) return false;
+    // Уже есть открытая модалка с отложенным payload'ом — тоже блокируем.
+    if (commentDialog.show && commentDialog.pendingPayload) return true;
+    if (_pendingSyncRows.size === 0) return false;
+    for (const row of _pendingSyncRows) {
+        if (!row) continue;
+        let idx = tableData.value.indexOf(row);
+        if (idx === -1 && row.id != null) {
+            idx = tableData.value.findIndex(r => r && r.id === row.id);
+        }
+        if (idx === -1) continue;
+        const snap = _serverSnapshot[idx] || {};
+        const fields = new Set([...Object.keys(row || {}), ...Object.keys(snap)]);
+        for (const field of fields) {
+            if (field.endsWith('_style')) continue;
+            const oldN = _normalizeForCompare(snap[field]);
+            if (oldN === null) continue; // пустое было → добавление, без коммента
+            const newN = _normalizeForCompare(row[field]);
+            if (oldN !== newN) return true;
+        }
+    }
+    return false;
+};
+
 // «Гарантированная» доставка для unload / Inertia 'before'-навигации:
 // `fetch` с `keepalive: true` переживает закрытие вкладки и переход. Inertia-router
 // этот запрос не отменяет (мы не используем router.post). Минус: ответ не обрабатывается
@@ -2030,13 +2060,36 @@ let _removeInertiaBefore = null;
 // чтобы не сломать скролл на других страницах (audit-log, users, profile).
 let _prevBodyOverflow = '';
 
+// Обработчик beforeunload: для не-админа с pending-модификациями не отправляем
+// beacon (он бы отвалился 422 на сервере, юзер получил бы потерю данных), а
+// показываем штатный браузерный confirm — пусть либо отменит уход, либо примет.
+// Для всех остальных случаев — обычный keepalive-flush.
+const _onBeforeUnload = (e) => {
+    if (_hasPendingNonAdminMods()) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    }
+    _flushPendingSyncBeacon();
+};
+
 onMounted(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('click', handleGlobalClick);
-    // Закрытие вкладки / навигация — досылаем буфер через keepalive-fetch,
-    // который не отменяется Inertia/браузером при unload.
-    window.addEventListener('beforeunload', _flushPendingSyncBeacon);
-    _removeInertiaBefore = router.on('before', () => { _flushPendingSyncBeacon(); });
+    // Закрытие вкладки — для админа/чистых добавлений досылаем буфер keepalive-fetch'ем.
+    // Для не-админа с модификациями — браузерный confirm о несохранённых.
+    window.addEventListener('beforeunload', _onBeforeUnload);
+    // Inertia-навигация (смена листа, /audit-log, /users и т.п.). Если есть
+    // pending-модификации не-админа — отменяем переход и принудительно
+    // открываем модалку «Причина изменения» через обычный flush. Иначе beacon
+    // молча уронил бы запрос на сервере, и правка была бы потеряна.
+    _removeInertiaBefore = router.on('before', () => {
+        if (_hasPendingNonAdminMods()) {
+            _flushPendingSync();
+            return false;
+        }
+        _flushPendingSyncBeacon();
+    });
     // Excel-таблица сама управляет скроллом — body должен быть зафиксирован,
     // но только пока Dashboard смонтирован.
     _prevBodyOverflow = document.body.style.overflow;
@@ -2045,11 +2098,13 @@ onMounted(() => {
 
 onUnmounted(() => {
     // При размонтировании самого Dashboard отправляем синхронно через keepalive —
-    // обычный router.post Inertia может отменить.
+    // обычный router.post Inertia может отменить. Не-админ с pending-mods сюда
+    // дойти не должен (router.on('before') отменяет навигацию), но на всякий —
+    // лучше тихий 422 на сервере, чем падение в onUnmounted.
     _flushPendingSyncBeacon();
     window.removeEventListener('keydown', handleGlobalKeydown);
     window.removeEventListener('click', handleGlobalClick);
-    window.removeEventListener('beforeunload', _flushPendingSyncBeacon);
+    window.removeEventListener('beforeunload', _onBeforeUnload);
     if (_removeInertiaBefore) _removeInertiaBefore();
     document.body.style.overflow = _prevBodyOverflow;
 });
