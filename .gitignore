@@ -15,5 +15,7 @@ yarn-error.log
 /.vscode
 # Локальный portable Redis (бинарники Windows). На проде ставится из пакетов.
 /.redis
+# Локальный portable nginx (бинарники Windows). На проде ставится из пакетов.
+/.nginx
 # Артефакты сборки от прошлых .ini правок
 *.ini.bak.*
