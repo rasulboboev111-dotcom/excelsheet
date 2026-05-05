@@ -34,12 +34,17 @@ return new class extends Migration
         $user = User::where('email', $email)->first();
 
         if (!$user) {
-            $user = User::create([
+            // forceFill в обход $fillable: 'email_verified_at' не входит в fillable
+            // на User-модели, и обычный create() его молча проглотил бы — юзер
+            // создавался бы НЕВЕРИФИЦИРОВАННЫМ и не мог логиниться (web-роуты
+            // защищены 'verified' middleware).
+            $user = (new User())->forceFill([
                 'name'              => $name,
                 'email'             => $email,
                 'password'          => Hash::make($password),
                 'email_verified_at' => now(),
             ]);
+            $user->save();
         }
 
         // Назначаем глобальную admin-роль (team_id = NULL).
