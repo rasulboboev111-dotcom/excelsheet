@@ -4,7 +4,8 @@
       "Bash(npm install *)",
       "Bash(node -e \"console.log\\(require\\('exceljs'\\).version || 'ok'\\); console.log\\(require\\('file-saver'\\) ? 'file-saver-ok' : 'missing'\\);\")",
       "Bash(php artisan tinker '--execute= *)",
-      "Bash(php artisan *)"
+      "Bash(php artisan *)",
+      "Bash(npm run *)"
     ]
   }
 }
