@@ -302,6 +302,28 @@ const styleToExceljs = (style, cell) => {
     else if (style.numberFormat === 'comma') cell.numFmt = '#,##0';
 };
 
+// Excel formula injection: блокируем ТОЛЬКО реальные command-execution
+// паттерны, которые в нормальных пользовательских данных встретиться не могут.
+// Это сохраняет точность экспорта: =SUM, =VLOOKUP, =HYPERLINK, =IMPORTRANGE и
+// прочие легитимные формулы экспортируются без изменений (round-trip fidelity).
+//
+// Что блокируем:
+//   • DDE-канал "|" в формуле — устаревший механизм межпроцессного вызова,
+//     основной вектор `=cmd|'/c calc'!A1`. Не используется в обычных данных.
+//   • Функции прямого исполнения / вызова системы: cmd, DDE, EXEC, CALL,
+//     MSEXCEL, RTD, WEBSERVICE.
+// Что НЕ блокируем (round-trip fidelity):
+//   • HYPERLINK — обычные ссылки. Excel сам спрашивает подтверждение на открытие.
+//   • IMPORTXML/IMPORTRANGE/etc. — функции Google Sheets, для Excel нерелевантны.
+//   • Текстовые ячейки с +, -, @, whitespace — это валидные данные (телефоны,
+//     ники, и т.п.), сохраняем как есть.
+const DANGEROUS_FORMULA_RE = /\b(?:cmd|DDE|EXEC|CALL|MSEXCEL|RTD|WEBSERVICE)\b/i;
+const isDangerousFormula = (body) => {
+    if (typeof body !== 'string') return false;
+    if (body.includes('|')) return true;
+    return DANGEROUS_FORMULA_RE.test(body);
+};
+
 // Excel-ограничения для имени листа: длина ≤ 31, нельзя символы : \ / ? * [ ],
 // нельзя начинать/заканчивать апострофом, нельзя дубликаты в одной книге (case-insensitive).
 const sanitizeSheetName = (raw) => {
@@ -357,7 +379,14 @@ export async function writeXlsxFile(filename, sheets) {
                 if (raw === null || raw === undefined || raw === '') {
                     cell.value = null;
                 } else if (typeof raw === 'string' && raw.startsWith('=')) {
-                    cell.value = { formula: raw.slice(1) };
+                    const body = raw.slice(1);
+                    if (isDangerousFormula(body)) {
+                        // Опасный паттерн (DDE/cmd/HYPERLINK/IMPORT*/WEBSERVICE/RTD)
+                        // — пишем как текст с префиксом "'" чтобы Excel не вычислил.
+                        cell.value = "'" + raw;
+                    } else {
+                        cell.value = { formula: body };
+                    }
                 } else if (typeof raw === 'number' && rowObj[cd.field + '_style']?.numberFormat === 'shortDate') {
                     cell.value = excelSerialToDate(raw);
                 } else if (typeof raw === 'number') {

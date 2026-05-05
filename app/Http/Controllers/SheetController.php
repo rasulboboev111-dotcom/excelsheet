@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Auth\Access\AuthorizationException;
 use Inertia\Inertia;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
@@ -20,6 +21,15 @@ class SheetController extends Controller
     private const MAX_IMPORT_COLS = 1000;
     private const MAX_UPDATE_ROWS = 50000;
     private const MAX_ROW_INDEX = 1048576;
+    // Жёсткие лимиты на импорт. Защищают от:
+    //   • OOM при парсинге огромного JSON;
+    //   • DoS-атаки «100k строк × 1000 колонок = 100M ячеек», которая положит БД;
+    //   • исчерпания диска через гигабайтные текстовые поля.
+    // post_max_size / upload_max_filesize в php.ini должны быть согласованы
+    // (рекомендуется 80–100 МБ); см. DEPLOY.md.
+    private const MAX_IMPORT_BODY_BYTES   = 50 * 1024 * 1024;     // 50 МБ — отсечка по Content-Length
+    private const MAX_IMPORT_TOTAL_CELLS  = 1_000_000;            // 1M ячеек суммарно
+    private const MAX_CELL_VALUE_LENGTH   = 32_767;               // Excel-предел длины строки в ячейке
     // Ограничение на количество diff-записей, которые держим в памяти ПЕРЕД срезом для лога.
     // Реальный счётчик cells_changed считается отдельно и не зависит от лимита.
     private const AUDIT_SAMPLE_LIMIT = 1000;
@@ -403,6 +413,18 @@ class SheetController extends Controller
         // лист через Sheet::canEdit() (проверка userRole === 'owner').
         // Делать его видимым/редактируемым для других юзеров — задача админа.
 
+        // 1. Раннее отсечение по Content-Length. К моменту работы метода JSON
+        // уже распарсен — это не защита от OOM (её даёт post_max_size в php.ini),
+        // а понятная ошибка 413 для клиента, если он шлёт явно гигантский payload.
+        $contentLength = (int) $request->header('Content-Length', 0);
+        if ($contentLength > self::MAX_IMPORT_BODY_BYTES) {
+            abort(413, sprintf(
+                'Размер запроса (%.1f МБ) превышает лимит %d МБ.',
+                $contentLength / 1024 / 1024,
+                (int) (self::MAX_IMPORT_BODY_BYTES / 1024 / 1024)
+            ));
+        }
+
         $payload = $request->validate([
             'name'             => 'required|string|max:255',
             'columns'          => 'sometimes|array|max:' . self::MAX_IMPORT_COLS,
@@ -411,6 +433,39 @@ class SheetController extends Controller
             'rows.*.row_index' => 'required_with:rows|integer|min:0|max:' . self::MAX_ROW_INDEX,
             'rows.*.data'      => 'sometimes|array|max:' . self::MAX_IMPORT_COLS,
         ]);
+
+        // 2. Суммарная проверка ячеек. rows.max + data.max сами по себе не
+        // защищают от 100k строк × 1000 колонок = 100M ячеек — это убьёт БД
+        // и съест всю память на upsert. Считаем фактическую сумму ключей.
+        $totalCells = 0;
+        foreach ($payload['rows'] ?? [] as $row) {
+            $totalCells += count($row['data'] ?? []);
+            if ($totalCells > self::MAX_IMPORT_TOTAL_CELLS) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'rows' => sprintf(
+                        'Слишком много ячеек в импорте. Максимум: %s.',
+                        number_format(self::MAX_IMPORT_TOTAL_CELLS, 0, '.', ' ')
+                    ),
+                ]);
+            }
+        }
+
+        // 3. Ограничение на длину одной ячейки (Excel-совместимый предел).
+        // Без этого можно прислать 100k строк × 1 МБ строки = 100 ГБ в БД.
+        foreach ($payload['rows'] ?? [] as $rowIdx => $row) {
+            foreach (($row['data'] ?? []) as $field => $value) {
+                if (is_string($value) && mb_strlen($value) > self::MAX_CELL_VALUE_LENGTH) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'rows' => sprintf(
+                            'Значение в строке %d, колонка "%s" превышает %s символов.',
+                            $rowIdx + 1,
+                            $field,
+                            number_format(self::MAX_CELL_VALUE_LENGTH, 0, '.', ' ')
+                        ),
+                    ]);
+                }
+            }
+        }
 
         $columns = $payload['columns'] ?? [];
         if (empty($columns)) {
@@ -662,6 +717,33 @@ class SheetController extends Controller
     }
 
     /**
+     * Минимальная защита от Excel formula injection при записи в .xlsx.
+     * Блокируем только реальные command-execution паттерны (DDE-канал "|",
+     * cmd/DDE/EXEC/CALL/MSEXCEL/RTD/WEBSERVICE) — они в обычных пользовательских
+     * данных не встречаются. Всё остальное (включая =HYPERLINK, =SUM, текст с
+     * лидирующим +/-/@) экспортируется как есть, чтобы скачанный файл точно
+     * соответствовал листу (round-trip fidelity).
+     */
+    private const DANGEROUS_FORMULA_REGEX = '/\b(?:cmd|DDE|EXEC|CALL|MSEXCEL|RTD|WEBSERVICE)\b/i';
+
+    private function writeSafeCellValue($worksheet, string $coordinate, $val): void
+    {
+        if ($val === null || $val === '') {
+            return;
+        }
+        if (is_string($val) && str_starts_with($val, '=')) {
+            $body = substr($val, 1);
+            $isDangerous = str_contains($body, '|')
+                || preg_match(self::DANGEROUS_FORMULA_REGEX, $body);
+            if ($isDangerous) {
+                $worksheet->setCellValueExplicit($coordinate, $val, DataType::TYPE_STRING);
+                return;
+            }
+        }
+        $worksheet->setCellValue($coordinate, $val);
+    }
+
+    /**
      * Генерит .xlsx для отправки. Возвращает массив для GmailMailerService.
      * Использует PhpSpreadsheet (уже в composer.json).
      */
@@ -681,10 +763,13 @@ class SheetController extends Controller
         // переводит 1→A, 2→B, ..., 27→AA.
         $colAddr = fn (int $i) => \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
 
-        // Заголовки.
+        // Заголовки. Имена колонок берём из БД, но всё равно пропускаем через
+        // safe-writer — шапка вида "=cmd|..." теоретически может быть проставлена
+        // при импорте чужого xlsx и попасть в headerName.
         $col = 1;
         foreach ($columns as $c) {
-            $ws->setCellValue($colAddr($col) . '1', $c['headerName'] ?? $c['field'] ?? ('Column ' . $col));
+            $headerVal = $c['headerName'] ?? $c['field'] ?? ('Column ' . $col);
+            $this->writeSafeCellValue($ws, $colAddr($col) . '1', $headerVal);
             $col++;
         }
         // Жирный шрифт для заголовков.
@@ -702,7 +787,7 @@ class SheetController extends Controller
                 if (!$field) { $col++; continue; }
                 $val = $r->row_data[$field] ?? null;
                 if ($val !== null && !is_array($val)) {
-                    $ws->setCellValue($colAddr($col) . $rowNum, $val);
+                    $this->writeSafeCellValue($ws, $colAddr($col) . $rowNum, $val);
                 }
                 $col++;
             }

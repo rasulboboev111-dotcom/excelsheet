@@ -1946,63 +1946,25 @@ const exportXlsx = async () => {
         alert('Откройте лист, который хотите скачать.');
         return;
     }
-    const allSheets = props.sheets || [];
-    const activeId = props.activeSheet.id;
 
-    // Локальная мета (merges/validations/colWidths/rowHeights) для каждого листа
-    // живёт в localStorage. Для активного — берём sheetMeta.value (актуальная копия).
-    const metaFor = (id) => {
-        if (id === activeId) return sheetMeta.value;
-        try { return JSON.parse(localStorage.getItem(`excel_sheet_meta_${id}`) || '{}'); }
-        catch (_) { return {}; }
+    // Скачиваем ТОЛЬКО активный лист — тот, который пользователь сейчас видит
+    // и нажал «Скачать». rowData и columnDefs у него уже в памяти браузера,
+    // никакие GET-запросы за остальными листами не нужны.
+    const meta = sheetMeta.value || {};
+    const sheetForExport = {
+        name: props.activeSheet.name,
+        hidden: !!meta.hidden,
+        columnDefs: columnDefs.value,
+        rowData: tableData.value,
+        merges: meta.merges || [],
+        validations: meta.validations || {},
+        colWidths: meta.colWidths || {},
+        rowHeights: meta.rowHeights || {},
     };
-
-    // rowData неактивных листов не лежит в памяти браузера → дотягиваем GET-запросами.
-    // Используем Promise.allSettled, чтобы один упавший лист не валил весь экспорт.
-    const results = await Promise.allSettled(allSheets.map(async (s) => {
-        let rowData;
-        let cols;
-        if (s.id === activeId) {
-            rowData = tableData.value;
-            cols = columnDefs.value;
-        } else {
-            const resp = await axios.get(route('sheets.fetchData', s.id));
-            rowData = resp.data?.rows || [];
-            cols = (resp.data?.columns && resp.data.columns.length)
-                ? resp.data.columns
-                : (s.columns && s.columns.length ? s.columns : []);
-        }
-        const m = metaFor(s.id);
-        return {
-            name: s.name,
-            hidden: !!m.hidden,
-            columnDefs: cols,
-            rowData,
-            merges: m.merges || [],
-            validations: m.validations || {},
-            colWidths: m.colWidths || {},
-            rowHeights: m.rowHeights || {},
-        };
-    }));
-
-    const sheetsForExport = [];
-    const failed = [];
-    results.forEach((r, idx) => {
-        if (r.status === 'fulfilled') sheetsForExport.push(r.value);
-        else failed.push(allSheets[idx]?.name || `#${idx}`);
-    });
-
-    if (sheetsForExport.length === 0) {
-        alert('Не удалось загрузить ни одного листа: ' + failed.join(', '));
-        return;
-    }
-    if (failed.length > 0) {
-        if (!confirm(`Не удалось загрузить листы: ${failed.join(', ')}.\nСкачать файл без них?`)) return;
-    }
 
     const filename = (props.activeSheet.name || 'export').replace(/[/\\?%*:|"<>]/g, '_') + '.xlsx';
     try {
-        await writeXlsxFile(filename, sheetsForExport);
+        await writeXlsxFile(filename, [sheetForExport]);
     } catch (err) {
         console.error(err);
         alert('Не удалось сохранить файл: ' + (err?.message || err));
