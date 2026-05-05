@@ -13,3 +13,7 @@ npm-debug.log
 yarn-error.log
 /.idea
 /.vscode
+# Локальный portable Redis (бинарники Windows). На проде ставится из пакетов.
+/.redis
+# Артефакты сборки от прошлых .ini правок
+*.ini.bak.*
