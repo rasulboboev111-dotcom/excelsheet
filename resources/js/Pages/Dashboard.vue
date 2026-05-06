@@ -733,24 +733,26 @@ const _flushPendingSync = (commentText = null) => {
     saveStatus.value = 'saving';
     const body = { rows: p.rows };
     if (commentText) body.comment = commentText;
-    router.post(p.url, body, {
-        preserveScroll: true,
-        preserveState: true,
-        onSuccess: () => {
-            // После успешной записи на сервере наш snapshot догоняем до текущего tableData,
-            // чтобы следующий diff считался от актуального серверного состояния.
+    // axios, а не router.post: Inertia partial-reload пересоздавал props, AG Grid
+    // ронял внутренний скролл и убивал активный редактор. С axios страница не
+    // моргает — пользователь продолжает печатать, debounce сам отправляет.
+    axios.post(p.url, body)
+        .then(() => {
             refreshServerSnapshot();
             if (_pendingSyncRows.size === 0) {
                 saveStatus.value = 'saved';
                 lastSavedAt.value = new Date();
                 lastSaveError.value = '';
             }
-        },
-        onError: (errors) => {
+        })
+        .catch((e) => {
             saveStatus.value = 'error';
-            lastSaveError.value = (errors && Object.values(errors)[0]) || 'Сетевая ошибка';
-        },
-    });
+            const data = e?.response?.data;
+            const errs = data?.errors;
+            lastSaveError.value = (errs && Object.values(errs)[0]?.[0])
+                || data?.message
+                || 'Сетевая ошибка';
+        });
 };
 
 // «Сохранить» в модалке: отправляем payload с комментарием.
@@ -765,29 +767,28 @@ const submitCommentDialog = () => {
     commentDialog.pendingPayload = null;
     if (!p) return;
     saveStatus.value = 'saving';
-    router.post(p.url, { rows: p.rows, comment: text }, {
-        preserveScroll: true,
-        preserveState: true,
-        onSuccess: () => {
+    axios.post(p.url, { rows: p.rows, comment: text })
+        .then(() => {
             refreshServerSnapshot();
             if (_pendingSyncRows.size === 0) {
                 saveStatus.value = 'saved';
                 lastSavedAt.value = new Date();
                 lastSaveError.value = '';
             }
-        },
-        onError: (errors) => {
+        })
+        .catch((e) => {
             saveStatus.value = 'error';
-            lastSaveError.value = (errors && Object.values(errors)[0]) || 'Сетевая ошибка';
+            const data = e?.response?.data;
+            const errs = data?.errors;
+            lastSaveError.value = (errs && Object.values(errs)[0]?.[0]) || data?.message || 'Сетевая ошибка';
             // Если бэк вернул именно про комментарий — снова открыть модалку с этим текстом.
-            if (errors?.comment) {
-                commentDialog.error = errors.comment;
+            if (errs?.comment) {
+                commentDialog.error = Array.isArray(errs.comment) ? errs.comment[0] : errs.comment;
                 commentDialog.comment = text;
                 commentDialog.pendingPayload = p;
                 commentDialog.show = true;
             }
-        },
-    });
+        });
 };
 
 // «Отмена» в модалке: НЕ трогаем tableData, только возвращаем строки в очередь.
@@ -1243,18 +1244,41 @@ const handleRibbonAction = ({ type, value }) => {
         tableData.value.splice(at, 0, newRow);
         // Сдвиг merges и rowHeights, чтобы они не "уехали" относительно данных.
         shiftMetaRowsOnInsert(at);
+        // Шлём всю таблицу через updateData — это исключает гонку с буфером
+        // правок ячеек: если бы делали отдельный insertRow + параллельный
+        // pending updateData, индексы могли разъехаться. Системный комментарий
+        // нужен чтобы у не-админа не выскакивала модалка про "причину".
+        // axios + JSON-ответ — страница не моргает, AG Grid не пересоздаёт строки.
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-        // Вставка строки сдвигает row_index у нижестоящих → backend увидит много
-        // «модификаций». Чтобы не требовать комментарий у не-админа, кладём
-        // системный комментарий — он попадёт в журнал.
-        router.post(route('sheets.updateData', props.activeSheet.id), {
+        // Сбрасываем pending буфер, чтобы дублирующих updateData не было —
+        // мы и так шлём всю таблицу прямо сейчас.
+        _pendingSyncRows.clear();
+        if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+        saveStatus.value = 'saving';
+        axios.post(route('sheets.updateData', props.activeSheet.id), {
             rows: allRows,
             comment: `Вставка строки на позиции ${at + 1}`,
-        }, {
-            preserveScroll: true,
-            preserveState: true,
-            onSuccess: () => refreshServerSnapshot(),
-        });
+            // total_rows здесь технически не нужен для insert (хвост никуда не девается),
+            // но для симметрии с deleteRow и страховки от рассинхронизации — отправляем.
+            total_rows: tableData.value.length,
+        })
+            .then(() => {
+                refreshServerSnapshot();
+                if (_pendingSyncRows.size === 0) {
+                    saveStatus.value = 'saved';
+                    lastSavedAt.value = new Date();
+                    lastSaveError.value = '';
+                }
+            })
+            .catch((e) => {
+                // Откат оптимистичной вставки.
+                const idx = tableData.value.indexOf(newRow);
+                if (idx !== -1) tableData.value.splice(idx, 1);
+                shiftMetaRowsOnDelete(at);
+                tableApi.value?.refreshCells({ force: true });
+                saveStatus.value = 'error';
+                lastSaveError.value = e?.response?.data?.message || 'Не удалось вставить строку';
+            });
         tableApi.value?.refreshCells({ force: true });
         return;
     }
@@ -1262,18 +1286,37 @@ const handleRibbonAction = ({ type, value }) => {
     // === Удалить строку ===
     if (type === 'deleteRow') {
         if (activeRow === null || tableData.value.length <= 1) return;
+        const removedRow = tableData.value[activeRow];
+        const removedAt = activeRow;
         tableData.value.splice(activeRow, 1);
         shiftMetaRowsOnDelete(activeRow);
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
-        // Удаление строки тоже структурное изменение — системный комментарий.
-        router.post(route('sheets.updateData', props.activeSheet.id), {
+        _pendingSyncRows.clear();
+        if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+        saveStatus.value = 'saving';
+        axios.post(route('sheets.updateData', props.activeSheet.id), {
             rows: allRows,
-            comment: `Удаление строки ${activeRow + 1}`,
-        }, {
-            preserveScroll: true,
-            preserveState: true,
-            onSuccess: () => refreshServerSnapshot(),
-        });
+            comment: `Удаление строки ${removedAt + 1}`,
+            // КРИТИЧНО: без total_rows бэк сделает upsert на индексы 0..N-1, но
+            // «бывшая последняя» строка с индексом N в БД останется как фантом.
+            // Это и был баг: после Ctrl+R удалённая строка возвращалась с конца.
+            total_rows: tableData.value.length,
+        })
+            .then(() => {
+                refreshServerSnapshot();
+                if (_pendingSyncRows.size === 0) {
+                    saveStatus.value = 'saved';
+                    lastSavedAt.value = new Date();
+                    lastSaveError.value = '';
+                }
+            })
+            .catch((e) => {
+                tableData.value.splice(removedAt, 0, removedRow);
+                shiftMetaRowsOnInsert(removedAt);
+                tableApi.value?.refreshCells({ force: true });
+                saveStatus.value = 'error';
+                lastSaveError.value = e?.response?.data?.message || 'Не удалось удалить строку';
+            });
         tableApi.value?.refreshCells({ force: true });
         return;
     }
@@ -1401,24 +1444,53 @@ const handleRibbonAction = ({ type, value }) => {
 
 const handleRangeClear = ({ targetRows, colFields }) => {
     if (!props.canEdit) return;
+
+    // AG-Grid v32+ передаёт в targetRows СВОИ копии строк (node.data !== tableData[i]).
+    // Если мутировать копию — _buildSyncPayload потом возьмёт строку из tableData
+    // (где правка НЕ применилась) и пошлёт серверу старое значение. После F5 ячейка
+    // «возвращается». Поэтому игнорируем targetRows и работаем напрямую с tableData
+    // через индексы из currentSelection — это гарантирует, что мутация и upsert
+    // идут по одной и той же строке.
+    let r1, r2;
+    if (currentSelection.value) {
+        const { start, end } = currentSelection.value;
+        r1 = Math.min(start.row, end.row);
+        r2 = Math.max(start.row, end.row);
+    } else {
+        // Fallback: резолвим по id из targetRows, если выделения нет (например,
+        // при точечном clear через контекстное меню одной ячейки).
+        const indices = targetRows
+            .map(row => tableData.value.findIndex(r => r && row?.id != null && r.id === row.id))
+            .filter(i => i >= 0);
+        if (indices.length === 0) return;
+        r1 = Math.min(...indices);
+        r2 = Math.max(...indices);
+    }
+
+    const canonicalRows = [];
     const undoChanges = [];
-    targetRows.forEach(row => {
+    for (let r = r1; r <= r2; r++) {
+        const row = tableData.value[r];
+        if (!row) continue;
+        canonicalRows.push(row);
         colFields.forEach(field => {
             undoChanges.push({
                 dataRef: row, field, oldValue: row[field],
                 oldStyle: row[field + '_style'] ? deepClone(row[field + '_style']) : null
             });
         });
-    });
+    }
+    if (canonicalRows.length === 0) return;
+
     saveUndoState(undoChanges);
 
-    targetRows.forEach(row => {
+    canonicalRows.forEach(row => {
         colFields.forEach(field => {
             row[field] = '';
         });
     });
 
-    syncChangesToServer(targetRows);
+    syncChangesToServer(canonicalRows);
 };
 
 const handleMenuAction = async (action, value) => {
@@ -1427,7 +1499,21 @@ const handleMenuAction = async (action, value) => {
     const params = cellContextMenu.value.params;
     if (!params) return;
     const field = params.column?.getColId();
-    const row = params.node?.data;
+    // params.node.data — копия AG-Grid (v32+ клонирует строки). Резолвим в
+    // каноническую ссылку из tableData, иначе мутации полей (clear/cut/paste/…)
+    // правят копию, _buildSyncPayload берёт строку из tableData со старым
+    // значением, и после F5 правка «возвращается». Сначала пробуем по абс.
+    // индексу с учётом freezeRow, затем fallback на поиск по id.
+    const agData = params.node?.data;
+    let absIdx = params.node?.rowIndex;
+    if (params.node?.rowPinned === 'top') absIdx = 0;
+    else if (sheetMeta.value?.freezeRow && absIdx != null) absIdx = absIdx + 1;
+    let row = (absIdx != null && absIdx >= 0) ? tableData.value[absIdx] : null;
+    if (!row && agData?.id != null) {
+        const found = tableData.value.findIndex(r => r && r.id === agData.id);
+        if (found !== -1) row = tableData.value[found];
+    }
+    if (!row) row = agData; // last resort
     if (!row || !field) return;
 
     // === Границы — делегируем в Ribbon (применит к выделению или одной ячейке) ===

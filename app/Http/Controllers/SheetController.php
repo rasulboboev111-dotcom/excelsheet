@@ -238,6 +238,11 @@ class SheetController extends Controller
             // ячеек (см. валидацию ниже после расчёта diff). Для пустых→значение
             // (добавление) и для админа — необязателен.
             'comment'           => 'nullable|string|max:2000',
+            // Опционально: общее число строк после операции. Если задано —
+            // удаляем хвост (row_index >= total_rows) после upsert. Используется
+            // при удалении строк, чтобы убрать «фантом» последней строки,
+            // которая в новом состоянии уже отсутствует.
+            'total_rows'        => 'nullable|integer|min:0|max:' . self::MAX_ROW_INDEX,
         ]);
 
         // Карта field → headerName (имя колонки, которое видит пользователь)
@@ -337,27 +342,44 @@ class SheetController extends Controller
             ]);
         }
 
-        if (!empty($upsertRows)) {
-            // Дедуп по (sheet_id, row_index). PG ON CONFLICT DO UPDATE не умеет
-            // обработать два INSERT-а с одним конфликт-ключом в одном statement —
-            // падает с cardinality violation (21000). Если фронт прислал дубли
-            // (например, при реактивных заменах ссылок в очереди sync'а), оставляем
-            // последнюю запись — она самая свежая по порядку поступления.
-            $deduped = [];
-            foreach ($upsertRows as $r) {
-                $deduped[$r['sheet_id'] . ':' . $r['row_index']] = $r;
-            }
-            $upsertRows = array_values($deduped);
+        // Если фронт прислал total_rows — обрезаем хвост: всё, что в БД лежит
+        // на индексах >= total_rows, должно быть удалено. Это закрывает кейс
+        // удаления строки: upsert обновляет 0..N-1, но «бывшую последнюю»
+        // строку с индексом N в БД обычный upsert не трогает. Без truncate
+        // она всплывала бы при следующем чтении как «фантом».
+        $totalRows = $payload['total_rows'] ?? null;
 
-            // Один SQL вместо N. Conflict-key совпадает с UNIQUE(sheet_id, row_index).
-            // На вставке заполняются created_at/updated_at; на конфликте — обновляются row_data
-            // и updated_at (created_at не трогаем).
-            SheetData::upsert(
-                $upsertRows,
-                ['sheet_id', 'row_index'],
-                ['row_data', 'updated_at']
-            );
-        }
+        // Upsert + опциональный truncate в одной транзакции, чтобы между ними
+        // не вклинилась чужая запись и не образовалось рассогласование.
+        DB::transaction(function () use (&$upsertRows, $totalRows, $sheet) {
+            if (!empty($upsertRows)) {
+                // Дедуп по (sheet_id, row_index). PG ON CONFLICT DO UPDATE не умеет
+                // обработать два INSERT-а с одним конфликт-ключом в одном statement —
+                // падает с cardinality violation (21000). Если фронт прислал дубли
+                // (например, при реактивных заменах ссылок в очереди sync'а), оставляем
+                // последнюю запись — она самая свежая по порядку поступления.
+                $deduped = [];
+                foreach ($upsertRows as $r) {
+                    $deduped[$r['sheet_id'] . ':' . $r['row_index']] = $r;
+                }
+                $upsertRows = array_values($deduped);
+
+                // Один SQL вместо N. Conflict-key совпадает с UNIQUE(sheet_id, row_index).
+                // На вставке заполняются created_at/updated_at; на конфликте — обновляются row_data
+                // и updated_at (created_at не трогаем).
+                SheetData::upsert(
+                    $upsertRows,
+                    ['sheet_id', 'row_index'],
+                    ['row_data', 'updated_at']
+                );
+            }
+
+            if ($totalRows !== null) {
+                SheetData::where('sheet_id', $sheet->id)
+                    ->where('row_index', '>=', (int) $totalRows)
+                    ->delete();
+            }
+        });
 
         // Лог пишем ТОЛЬКО если реально менялось хоть одно значение.
         // Стилевые правки (жирный/цвет) в журнал не попадают — это шум.
@@ -370,7 +392,9 @@ class SheetController extends Controller
             $this->logAudit('cell_edit', $sheet->id, $details);
         }
 
-        return back();
+        // JSON, а не back(): фронт шлёт через axios без Inertia. Inertia partial-reload
+        // сбрасывал внутренний скролл AG Grid и убивал активный редактор.
+        return response()->json(['ok' => true]);
     }
 
     public function store(Request $request)
@@ -618,7 +642,7 @@ class SheetController extends Controller
             'shifted_rows' => $affected, // сколько строк сдвинулось вниз
         ]);
 
-        return back();
+        return response()->json(['ok' => true, 'shifted_rows' => $affected]);
     }
 
     public function deleteRow(Request $request, Sheet $sheet)
@@ -658,7 +682,7 @@ class SheetController extends Controller
             'shifted_rows' => $result['shifted'], // сколько строк подняли наверх
         ]);
 
-        return back();
+        return response()->json(['ok' => true, 'deleted' => $result['deleted'], 'shifted_rows' => $result['shifted']]);
     }
 
     /**
