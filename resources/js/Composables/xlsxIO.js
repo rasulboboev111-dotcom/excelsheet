@@ -1,7 +1,8 @@
-// ExcelJS и file-saver вытаскиваются динамически — нужны только при чтении/записи .xlsx.
-// При обычной навигации сайта эти ~500 КБ не грузятся.
+// ExcelJS, file-saver и HyperFormula вытаскиваются динамически — нужны только
+// при чтении/записи .xlsx. При обычной навигации сайта эти ~1 МБ не грузятся.
 let _ExcelJS = null;
 let _saveAs = null;
+let _HyperFormula = null;
 const ensureExcelJS = async () => {
     if (!_ExcelJS) {
         const mod = await import('exceljs');
@@ -15,6 +16,13 @@ const ensureSaveAs = async () => {
         _saveAs = mod.saveAs || mod.default?.saveAs || mod.default;
     }
     return _saveAs;
+};
+const ensureHyperFormula = async () => {
+    if (!_HyperFormula) {
+        const mod = await import('hyperformula');
+        _HyperFormula = mod.HyperFormula || mod.default?.HyperFormula || mod.default;
+    }
+    return _HyperFormula;
 };
 
 // Excel column index (1-based) → letter (A, B, ..., Z, AA, AB, ...)
@@ -359,8 +367,11 @@ export async function writeXlsxFile(filename, sheets) {
     wb.creator = 'Excel Online';
     wb.created = new Date();
 
+    // HyperFormula загружаем один раз (async), пока ExcelJS уже готов.
+    const HF = await ensureHyperFormula();
+
     const usedNames = new Set();
-    sheets.forEach(sheet => {
+    for (const sheet of sheets) {
         const safeName = dedupSheetName(sheet.name, usedNames);
         const ws = wb.addWorksheet(safeName, {
             state: sheet.hidden ? 'hidden' : 'visible'
@@ -368,6 +379,33 @@ export async function writeXlsxFile(filename, sheets) {
 
         const colDefs = sheet.columnDefs || [];
         const rows = sheet.rowData || [];
+
+        // === Считаем результаты формул через HyperFormula ===
+        // ExcelJS пишет cell.value = { formula }, и Excel пересчитывает сам — но в
+        // некоторых сборках/локалях даёт неверный результат (формулы могут «съезжать»
+        // между строками или брать не те ячейки). Чтобы избежать сюрпризов, считаем
+        // ВСЕ формулы на стороне фронта (HyperFormula — тот же движок, что в браузере)
+        // и подкладываем результат в xlsx через { formula, result }. Excel при открытии
+        // покажет наш result; если пересчитает — получит то же самое.
+        let hf = null;
+        let hfSheetId = null;
+        try {
+            hf = HF.buildEmpty({ licenseKey: 'gpl-v3' });
+            hf.addSheet('S');
+            hfSheetId = hf.getSheetId('S');
+            const fields = colDefs.map(c => c.field);
+            const hfData = rows.map(rr => fields.map(f => (rr?.[f] ?? '')));
+            hf.setSheetContent(hfSheetId, hfData);
+        } catch (_) { hf = null; }
+        const evalFormula = (rowIdx, colIdx) => {
+            if (!hf || hfSheetId == null) return undefined;
+            try {
+                const v = hf.getCellValue({ sheet: hfSheetId, col: colIdx, row: rowIdx });
+                if (v && typeof v === 'object' && 'value' in v) return v.value; // ErrorValue wrapper
+                if (v instanceof Error) return undefined;
+                return v;
+            } catch (_) { return undefined; }
+        };
 
         // Rows — пишем напрямую через getRow(N), не используем ws.columns,
         // чтобы исключить любые «фантомные» строки от автогенерации шапки exceljs.
@@ -381,23 +419,36 @@ export async function writeXlsxFile(filename, sheets) {
                 } else if (typeof raw === 'string' && raw.startsWith('=')) {
                     const body = raw.slice(1);
                     if (isDangerousFormula(body)) {
-                        // Опасный паттерн (DDE/cmd/HYPERLINK/IMPORT*/WEBSERVICE/RTD)
-                        // — пишем как текст с префиксом "'" чтобы Excel не вычислил.
                         cell.value = "'" + raw;
                     } else {
-                        cell.value = { formula: body };
+                        // Подкладываем computed result, чтобы Excel не пересчитывал
+                        // (бывает что Excel получает не те ячейки и даёт неверное
+                        // значение — например =H2-G2 = 30 вместо 95).
+                        const result = evalFormula(ri, ci);
+                        if (result !== undefined && result !== null && !(typeof result === 'number' && !isFinite(result))) {
+                            cell.value = { formula: body, result };
+                        } else {
+                            cell.value = { formula: body };
+                        }
                     }
                 } else if (typeof raw === 'number' && rowObj[cd.field + '_style']?.numberFormat === 'shortDate') {
                     cell.value = excelSerialToDate(raw);
                 } else if (typeof raw === 'number') {
                     cell.value = raw;
+                    // Большие целые числа (телефоны/ИНН/коды, попавшие как number)
+                    // в General-формате Excel показывает как 9,92E+11. Принуждаем
+                    // целочисленный формат — отображается полностью.
+                    if (Number.isInteger(raw) && Math.abs(raw) >= 1e10 && !rowObj[cd.field + '_style']?.numberFormat) {
+                        cell.numFmt = '0';
+                    }
                 } else if (typeof raw === 'string') {
-                    const trimmed = raw.trim();
-                    if (trimmed !== '' && /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
-                        const num = Number(trimmed);
-                        cell.value = isFinite(num) ? num : raw;
-                    } else {
-                        cell.value = raw;
+                    cell.value = raw;
+                    // Защита от Excel auto-coerce: если строка состоит из 10+ цифр
+                    // (телефон, ИНН, артикул), Excel в General-формате превратит в
+                    // число и покажет в научной нотации. numFmt='@' (Text) форсит
+                    // показ как есть.
+                    if (/^\d{10,}$/.test(raw)) {
+                        cell.numFmt = '@';
                     }
                 } else {
                     cell.value = raw;
@@ -407,6 +458,9 @@ export async function writeXlsxFile(filename, sheets) {
             if (sheet.rowHeights?.[ri]) r.height = sheet.rowHeights[ri] / 1.33;
             r.commit();
         });
+
+        // Освобождаем HF после записи листа.
+        try { hf?.destroy(); } catch (_) {}
 
         // Column widths — отдельно, после записи строк (не задействует header).
         colDefs.forEach((cd, ci) => {
@@ -443,7 +497,7 @@ export async function writeXlsxFile(filename, sheets) {
                 };
             }
         });
-    });
+    }
 
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
