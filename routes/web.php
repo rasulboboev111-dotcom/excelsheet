@@ -71,7 +71,8 @@ Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+    // Самоудаление аккаунта запрещено: пользователи не должны удалять себя.
+    // Если нужно удалить юзера — это делает админ через /users.
 
     // Подключение Gmail-аккаунта юзера для отправки писем от его имени.
     Route::get('/auth/google/connect',     [\App\Http\Controllers\Auth\GoogleAuthController::class, 'connect'])->name('google.connect');
