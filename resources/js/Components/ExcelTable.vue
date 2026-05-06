@@ -43,6 +43,25 @@ const onGridReady = (params) => {
     setTimeout(() => { updateHFData(); }, 0);
 };
 
+// Стабильный id для каждой строки. БЕЗ него AG-Grid v35 при любой реактивной
+// мутации rowData (Vue 3 deep proxy) делает фактически setRowData() — сбрасывает
+// виртуальный скролл к строке 0 и потом восстанавливает фокус на активной ячейке.
+// Визуально это «страница прыгает наверх и возвращается» во время ввода.
+//
+// С getRowId AG-Grid делает дельта-апдейты — скролл и активный редактор переживают
+// любую правку tableData. Используем data.id для строк из БД, либо `_client_id`
+// для локальных строк (поле проставляется при создании пустой строки в Dashboard).
+// WeakMap-вариант пробовали — AG-Grid v35 передаёт в params.data НЕ тот же proxy,
+// что в массиве, поэтому WeakMap-lookup промахивался и uid'ы плыли → текст
+// уезжал в верхние строки.
+const getRowId = (params) => {
+    const d = params?.data;
+    if (!d) return undefined;
+    if (d.id != null) return 'id_' + d.id;
+    if (d._client_id) return d._client_id;
+    return undefined;
+};
+
 // --- Тултип с размером во время ресайза ---
 let resizeTooltipEl = null;
 let lastMouseX = 0;
@@ -995,7 +1014,9 @@ const finalColumnDefs = computed(() => {
             @body-scroll="onBodyScroll"
             @column-resized="onColumnResized"
             @keydown="onGridKeyDown"
-            :animateRows="true"
+            :animateRows="false"
+            :getRowId="getRowId"
+            :suppressScrollOnNewData="true"
             :headerHeight="24"
             :rowHeight="25"
             :getRowHeight="getRowHeight"

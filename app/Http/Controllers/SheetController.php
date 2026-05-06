@@ -187,10 +187,17 @@ class SheetController extends Controller
                     ->orderBy('row_index')
                     ->get()
                     ->map(function ($row) {
-                        return array_merge([
+                        // ВАЖНО: реальный sheet_data.id и _row_index ВСЕГДА должны
+                        // победить, что бы ни лежало в row_data. Поэтому делаем
+                        // merge В ОБРАТНОМ ПОРЯДКЕ — сначала row_data, потом наши
+                        // поля. Иначе если в row_data случайно «застрял» чужой id
+                        // (например, после неаккуратного paste или предыдущей
+                        // session'и), AG-Grid получит дубликаты id → визуально
+                        // строка из позиции N отрисуется в позиции M.
+                        return array_merge((array) $row->row_data, [
                             'id' => $row->id,
                             '_row_index' => $row->row_index,
-                        ], $row->row_data);
+                        ]);
                     });
             } else {
                 // У юзера нет доступа к запрошенному листу — обнуляем activeSheet,
@@ -224,10 +231,10 @@ class SheetController extends Controller
         $rows = SheetData::where('sheet_id', $sheet->id)
             ->orderBy('row_index')
             ->get()
-            ->map(fn ($r) => array_merge([
+            ->map(fn ($r) => array_merge((array) $r->row_data, [
                 'id' => $r->id,
                 '_row_index' => $r->row_index,
-            ], $r->row_data));
+            ]));
 
         return response()->json([
             'sheet_id' => $sheet->id,
@@ -292,6 +299,14 @@ class SheetController extends Controller
             $clean = [];
             foreach (($row['data'] ?? []) as $key => $value) {
                 if (!is_string($key) || strlen($key) > 64) continue;
+                // Системные поля никогда не должны оседать в row_data:
+                //   • id/_row_index — реальные значения сервер инжектит при чтении сам;
+                //     если положить их в row_data, при следующей сессии у нескольких
+                //     строк может оказаться ОДИН и тот же id (после paste/копий между
+                //     листами) → AG-Grid'у плохо: дубль getRowId, визуально текст
+                //     «уезжает» в позицию строки-двойника.
+                //   • _client_id — это клиентский uid для AG-Grid, серверу не нужен.
+                if ($key === 'id' || $key === '_row_index' || $key === '_client_id') continue;
                 if (is_scalar($value) || $value === null) {
                     $clean[$key] = $value;
                 } elseif (is_array($value)) {

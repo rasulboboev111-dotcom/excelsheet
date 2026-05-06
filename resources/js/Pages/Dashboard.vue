@@ -68,20 +68,29 @@ const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: nu
 const isFormulaBarUpdating = ref(false);
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
 const tableApi = ref(null);
+
+// Уникальный id для локальной (не сохранённой в БД) строки. Используется
+// AG-Grid'овским getRowId — без стабильного id v35 на любую реактивную правку
+// делает setRowData() с reset виртуального скролла → визуально это «страница
+// идёт наверх и возвращается». _client_id шьём прямо в объект строки в момент
+// её создания (до того, как она попала в tableData), реактивных перезаписей
+// потом нет — полностью стабильно.
+let _clientRowCounter = 0;
+const _newEmptyRow = () => ({ _client_id: '_c_' + (++_clientRowCounter) });
+
 // Раскладываем строки из server-response по их АБСОЛЮТНОМУ row_index.
 // Сервер шлёт каждую строку с полем _row_index — оно говорит «это строка #42 листа»,
 // независимо от того, плотно идут ли строки или с разрывами. Без этой раскладки
 // в БД сохранилась строка с row_index=50, фронт получал массив из одной строки и
 // клал её в tableData[0] → пользователь видел «текст улетел наверх» после F5.
-// Промежуточные слоты заполняем пустыми объектами {}, чтобы AG-Grid рисовал пустые
-// ячейки и пользователь мог в них писать (мутации сохранятся с правильным
-// row_index = индекс в tableData).
+// Промежуточные слоты заполняем уникальными пустыми строками (с _client_id),
+// чтобы AG-Grid рисовал пустые ячейки и не путал их через getRowId.
 const _layoutInitialData = (rows) => {
     const out = [];
     (rows || []).forEach(r => {
         const idx = r?._row_index;
         if (typeof idx === 'number' && idx >= 0) {
-            while (out.length < idx) out.push({});
+            while (out.length < idx) out.push(_newEmptyRow());
             // Копию делаем, чтобы _row_index не утёк в payload и не мешал нашему
             // позиционному индексу при последующих сохранениях.
             const copy = { ...r };
@@ -544,7 +553,7 @@ const colLetter = (idx) => {
 const padTableData = () => {
     const target = Math.min(extraRowCount.value, MAX_ROWS);
     while (tableData.value.length < target) {
-        tableData.value.push({});
+        tableData.value.push(_newEmptyRow());
     }
 };
 watch(extraRowCount, padTableData, { immediate: true });
@@ -1276,7 +1285,7 @@ const handleRibbonAction = ({ type, value }) => {
 
     // === Вставить строку ===
     if (type === 'insertRow') {
-        const newRow = {};
+        const newRow = _newEmptyRow();
         columnDefs.value.forEach(col => { newRow[col.field] = ''; });
         const at = activeRow !== null ? activeRow + 1 : tableData.value.length;
         tableData.value.splice(at, 0, newRow);
