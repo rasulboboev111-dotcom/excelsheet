@@ -178,11 +178,19 @@ class SheetController extends Controller
             if ($activeSheet && $activeSheet->canView($userId)) {
                 $canViewActive = true;
                 $canEditActive = $activeSheet->canEdit($userId);
+                // Включаем row_index в ответ, чтобы фронт мог разместить строку на
+                // правильной абсолютной позиции в tableData. Без этого если в БД, скажем,
+                // одна строка с row_index=50, сервер вернул бы массив из ОДНОЙ строки,
+                // и фронт положил бы её в tableData[0] — пользователь печатал внизу,
+                // а после F5 текст «улетал наверх».
                 $sheetData = SheetData::where('sheet_id', $activeSheetId)
                     ->orderBy('row_index')
                     ->get()
                     ->map(function ($row) {
-                        return array_merge(['id' => $row->id], $row->row_data);
+                        return array_merge([
+                            'id' => $row->id,
+                            '_row_index' => $row->row_index,
+                        ], $row->row_data);
                     });
             } else {
                 // У юзера нет доступа к запрошенному листу — обнуляем activeSheet,
@@ -216,7 +224,10 @@ class SheetController extends Controller
         $rows = SheetData::where('sheet_id', $sheet->id)
             ->orderBy('row_index')
             ->get()
-            ->map(fn ($r) => array_merge(['id' => $r->id], $r->row_data));
+            ->map(fn ($r) => array_merge([
+                'id' => $r->id,
+                '_row_index' => $r->row_index,
+            ], $r->row_data));
 
         return response()->json([
             'sheet_id' => $sheet->id,

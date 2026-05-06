@@ -68,7 +68,33 @@ const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: nu
 const isFormulaBarUpdating = ref(false);
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
 const tableApi = ref(null);
-const tableData = ref(deepClone(props.initialData)); // Глубокая копия для полной изоляции
+// Раскладываем строки из server-response по их АБСОЛЮТНОМУ row_index.
+// Сервер шлёт каждую строку с полем _row_index — оно говорит «это строка #42 листа»,
+// независимо от того, плотно идут ли строки или с разрывами. Без этой раскладки
+// в БД сохранилась строка с row_index=50, фронт получал массив из одной строки и
+// клал её в tableData[0] → пользователь видел «текст улетел наверх» после F5.
+// Промежуточные слоты заполняем пустыми объектами {}, чтобы AG-Grid рисовал пустые
+// ячейки и пользователь мог в них писать (мутации сохранятся с правильным
+// row_index = индекс в tableData).
+const _layoutInitialData = (rows) => {
+    const out = [];
+    (rows || []).forEach(r => {
+        const idx = r?._row_index;
+        if (typeof idx === 'number' && idx >= 0) {
+            while (out.length < idx) out.push({});
+            // Копию делаем, чтобы _row_index не утёк в payload и не мешал нашему
+            // позиционному индексу при последующих сохранениях.
+            const copy = { ...r };
+            delete copy._row_index;
+            out[idx] = copy;
+        } else {
+            // Старый ответ без _row_index — просто пушим в порядке прихода.
+            out.push(r);
+        }
+    });
+    return out;
+};
+const tableData = ref(_layoutInitialData(deepClone(props.initialData)));
 const currentSelection = ref(null);
 
 // Предохранитель для Undo/Redo
@@ -91,7 +117,7 @@ const inspectedRow = ref(null);
 //      перед сохранением — и требовать комментарий у не-админа;
 //   2) откатывать локальные правки, если юзер нажал «Отмена» в модалке.
 // Хранится позиционно — индекс в массиве совпадает с tableData.value[i].
-let _serverSnapshot = deepClone(props.initialData || []);
+let _serverSnapshot = _layoutInitialData(deepClone(props.initialData || []));
 const refreshServerSnapshot = () => {
     _serverSnapshot = deepClone(tableData.value);
 };
@@ -489,7 +515,19 @@ const COL_GROW = 10;
 const MAX_ROWS = 1048576;
 const MAX_COLS = 16384;
 
-const extraRowCount = ref(Math.max(ROW_INITIAL, (props.initialData?.length ?? 0)));
+// Минимальный размер таблицы: хотя бы ROW_INITIAL строк, но если в initialData
+// есть строка с большим _row_index — поднимаем границу выше неё, иначе уже
+// разложенный tableData окажется длиннее, чем extraRowCount, и padTableData
+// не сможет тримировать обратно.
+const _initialMaxIdx = (props.initialData || []).reduce(
+    (m, r) => (typeof r?._row_index === 'number' ? Math.max(m, r._row_index) : m),
+    -1
+);
+const extraRowCount = ref(Math.max(
+    ROW_INITIAL,
+    (props.initialData?.length ?? 0),
+    _initialMaxIdx + 1
+));
 const extraColCount = ref(Math.max(COL_INITIAL, (props.activeSheet?.columns?.length ?? 0)));
 
 const colLetter = (idx) => {
@@ -993,12 +1031,12 @@ const handleCellValueChanged = (event) => {
     // а уже потом кладём в pending именно нашу ссылку. Иначе:
     //   1) styles/ribbon-правки идут в tableData[i], а value-правки — в копию AG-Grid;
     //   2) при flush'е в pending Set попадают ДВЕ разных ссылки → дубль row_index → 500.
+    // ExcelTable.onCellValueChanged уже конвертирует AG-Grid display-index в
+    // АБСОЛЮТНЫЙ индекс через toAbsRow() (учитывая rowPinned/freezeRow) и
+    // присылает его как node.rowIndex. Никаких дополнительных +1 здесь делать
+    // НЕ НАДО — иначе с включённым freezeRow получаем двойную конверсию,
+    // правка ячейки уезжает в соседнюю строку (визуально «текст идёт вверх/вниз»).
     let rowIndex = node?.rowIndex ?? node?.row_index;
-    if (node?.rowPinned === 'top') {
-        rowIndex = 0;
-    } else if (sheetMeta.value?.freezeRow) {
-        rowIndex = (rowIndex ?? -1) + 1;
-    }
     if (rowIndex == null || rowIndex < 0) rowIndex = tableData.value.indexOf(data);
 
     let canonicalRow = (rowIndex >= 0) ? tableData.value[rowIndex] : null;
