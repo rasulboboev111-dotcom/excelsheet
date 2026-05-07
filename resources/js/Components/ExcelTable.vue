@@ -468,14 +468,89 @@ const onCellMouseOver = (params) => {
     }
 };
 
-const onWindowMouseUp = () => { isSelecting.value = false; };
+// === Auto-scroll при выделении мышью ===
+// Если при зажатой левой кнопке курсор ушёл к нижнему/верхнему/правому/левому
+// краю грид-контейнера — таймер продлевает выделение и докручивает грид в ту
+// же сторону. Без этого `cellMouseOver` не приходит для строк за пределами
+// видимой области, и selectionEnd замирает на последней видимой ячейке.
+const wrapperRef = ref(null);
+let _autoScrollTimer = null;
+let _autoScrollDir = { row: 0, col: 0 };
+
+const stopAutoScroll = () => {
+    if (_autoScrollTimer) { clearInterval(_autoScrollTimer); _autoScrollTimer = null; }
+    _autoScrollDir = { row: 0, col: 0 };
+};
+
+const computeAutoScrollDir = (e) => {
+    const wrap = wrapperRef.value;
+    if (!wrap) return { row: 0, col: 0 };
+    const rect = wrap.getBoundingClientRect();
+    const EDGE = 30; // пиксели зоны срабатывания у каждого края
+    let row = 0, col = 0;
+    if (e.clientY > rect.bottom - EDGE) row = 1;
+    else if (e.clientY < rect.top + EDGE) row = -1;
+    if (e.clientX > rect.right - EDGE) col = 1;
+    else if (e.clientX < rect.left + EDGE) col = -1;
+    return { row, col };
+};
+
+const ensureAutoScrollRunning = () => {
+    if (_autoScrollTimer) return;
+    _autoScrollTimer = setInterval(() => {
+        if (!isSelecting.value || !selectionEnd.value || !gridApi.value) {
+            stopAutoScroll();
+            return;
+        }
+        const { row: dRow, col: dCol } = _autoScrollDir;
+        if (dRow === 0 && dCol === 0) { stopAutoScroll(); return; }
+
+        const totalRows = totalAbsRows();
+        const lastCol = (props.columnDefs?.length || 1) - 1;
+        let newRow = Math.max(0, Math.min(totalRows - 1, selectionEnd.value.row + dRow));
+        let newCol = Math.max(0, Math.min(lastCol, selectionEnd.value.col + dCol));
+        if (newRow === selectionEnd.value.row && newCol === selectionEnd.value.col) {
+            stopAutoScroll();
+            return;
+        }
+        selectionEnd.value = { row: newRow, col: newCol, rowData: null };
+
+        // Скроллим грид так, чтобы новая «end»-ячейка была видна.
+        // ensureIndexVisible принимает AG-Grid display-index (без pinned-строки).
+        try {
+            const agRowIdx = props.freezeRow ? Math.max(0, newRow - 1) : newRow;
+            gridApi.value.ensureIndexVisible(agRowIdx);
+        } catch (_) {}
+        try {
+            const cf = props.columnDefs[newCol]?.field;
+            if (cf) gridApi.value.ensureColumnVisible(cf);
+        } catch (_) {}
+
+        emit('selection-changed', { start: selectionStart.value, end: selectionEnd.value });
+        gridApi.value.refreshCells({ suppressFlash: true });
+    }, 40);
+};
+
+const trackMouseAndAutoScroll = (e) => {
+    trackMouse(e); // существующий tracker для tooltip-ресайза
+    if (!isSelecting.value) { stopAutoScroll(); return; }
+    _autoScrollDir = computeAutoScrollDir(e);
+    if (_autoScrollDir.row === 0 && _autoScrollDir.col === 0) {
+        stopAutoScroll();
+    } else {
+        ensureAutoScrollRunning();
+    }
+};
+
+const onWindowMouseUp = () => { isSelecting.value = false; stopAutoScroll(); };
 onMounted(() => {
     window.addEventListener('mouseup', onWindowMouseUp);
-    window.addEventListener('mousemove', trackMouse);
+    window.addEventListener('mousemove', trackMouseAndAutoScroll);
 });
 onUnmounted(() => {
     window.removeEventListener('mouseup', onWindowMouseUp);
-    window.removeEventListener('mousemove', trackMouse);
+    window.removeEventListener('mousemove', trackMouseAndAutoScroll);
+    stopAutoScroll();
     document.removeEventListener('mousemove', onRowResizeMove);
     document.removeEventListener('mouseup', onRowResizeEnd);
     if (growRowsTimer) { clearTimeout(growRowsTimer); growRowsTimer = null; }
@@ -1001,7 +1076,7 @@ const finalColumnDefs = computed(() => {
 </script>
 
 <template>
-    <div class="ag-theme-balham" style="width: 100%; height: 100%;" @contextmenu.prevent @click="onWrapperClick">
+    <div ref="wrapperRef" class="ag-theme-balham" style="width: 100%; height: 100%;" @contextmenu.prevent @click="onWrapperClick">
         <ag-grid-vue
             style="width: 100%; height: 100%;"
             theme="legacy"
