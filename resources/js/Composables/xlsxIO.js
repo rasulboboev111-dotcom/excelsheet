@@ -120,7 +120,18 @@ const dateToExcelSerial = (date) => {
 };
 
 // Read .xlsx File → workbook structure { sheets: [{ name, hidden, columnDefs, rowData, merges, validations, colWidths, rowHeights }] }
+//
+// Лимит на размер файла — защита от ZIP-bomb атак: 1 МБ архива легко
+// разворачивается в 1 ГБ XML, ExcelJS пытается распарсить и валит вкладку.
+// 50 МБ — потолок, после которого даже легальные файлы маловероятны.
+const MAX_XLSX_FILE_BYTES = 50 * 1024 * 1024;
 export async function readXlsxFile(file) {
+    if (file?.size > MAX_XLSX_FILE_BYTES) {
+        throw new Error(
+            `Файл слишком большой (${Math.round(file.size / 1024 / 1024)} МБ). ` +
+            `Максимум: ${MAX_XLSX_FILE_BYTES / 1024 / 1024} МБ.`
+        );
+    }
     const arrayBuffer = await file.arrayBuffer();
     const ExcelJS = await ensureExcelJS();
     const wb = new ExcelJS.Workbook();

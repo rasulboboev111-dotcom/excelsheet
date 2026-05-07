@@ -168,6 +168,27 @@ class GmailMailerService
     {
         // RFC 2047 — кодируем заголовки в UTF-8 base64.
         $encodeHeader = fn (string $s) => '=?UTF-8?B?' . base64_encode($s) . '?=';
+        // ЗАЩИТА от MIME-header-injection (RFC 5322): любые CR/LF в значениях,
+        // которые попадают в заголовки в сыром виде (`From: <email>`, `To: email`),
+        // позволят атакующему дописать произвольные заголовки (Bcc/Cc).
+        // base64-кодируемые поля (subject, fromName, attachment name) безопасны
+        // сами по себе, но всё равно режем — на случай если кодирование сломается.
+        $stripNewlines = fn (string $s) => preg_replace('/[\r\n\0]+/', ' ', $s);
+        $from     = $stripNewlines($from);
+        $to       = $stripNewlines($to);
+        $fromName = $stripNewlines($fromName);
+        $subject  = $stripNewlines($subject);
+
+        // Валидируем from-email — он берётся из User->google_email и теоретически
+        // может быть скомпрометирован (через подмену OAuth-callback'а). Если не
+        // валиден как email, отказываемся отправлять (а не пытаемся «починить»).
+        if (!filter_var($from, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Некорректный from-email у отправителя.');
+        }
+        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Некорректный email получателя.');
+        }
+
         $boundary = 'BOUNDARY_' . bin2hex(random_bytes(16));
         $contentType = $isHtml ? 'text/html' : 'text/plain';
 

@@ -29,15 +29,26 @@ use App\Http\Controllers\UserController;
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [SheetController::class, 'index'])->name('dashboard');
-    Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])->name('sheets.update');
+    Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])
+        ->middleware('throttle:60,1')
+        ->name('sheets.update');
     // Throttle: не более 60 запросов/мин на пользователя — защита от случайного
     // DoS, если пользователь триггернёт массовую перевыгрузку через экспорт.
     Route::get('/sheets/{sheet}/data', [SheetController::class, 'fetchData'])
         ->middleware('throttle:60,1')
         ->name('sheets.fetchData');
-    Route::post('/sheets/{sheet}/data', [SheetController::class, 'updateData'])->name('sheets.updateData');
-    Route::post('/sheets/{sheet}/insert-row', [SheetController::class, 'insertRow'])->name('sheets.insertRow');
-    Route::post('/sheets/{sheet}/delete-row', [SheetController::class, 'deleteRow'])->name('sheets.deleteRow');
+    // Write-операции: 300/мин на пользователя. Это в 5 раз больше debounce'а
+    // фронта (он шлёт максимум один POST/секунду при активном вводе) — норма
+    // не упирается, но злонамеренный/багнутый клиент не задудосит сервер.
+    Route::post('/sheets/{sheet}/data', [SheetController::class, 'updateData'])
+        ->middleware('throttle:300,1')
+        ->name('sheets.updateData');
+    Route::post('/sheets/{sheet}/insert-row', [SheetController::class, 'insertRow'])
+        ->middleware('throttle:60,1')
+        ->name('sheets.insertRow');
+    Route::post('/sheets/{sheet}/delete-row', [SheetController::class, 'deleteRow'])
+        ->middleware('throttle:60,1')
+        ->name('sheets.deleteRow');
 
     // Отправка листа по почте через подключенный Gmail юзера.
     // Rate limit 30/час — защита от спама и от исчерпания Gmail-квоты юзера.
@@ -47,7 +58,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Импорт xlsx — любой залогиненный юзер. Импортёр становится owner новых листов
     // и может их редактировать. Видимость для других юзеров остаётся за админом.
-    Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])->name('sheets.importSheet');
+    // Throttle помягче (10/мин) — импорт тяжёлый.
+    Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])
+        ->middleware('throttle:10,1')
+        ->name('sheets.importSheet');
 });
 
 // Только админ: создание пустого листа, удаление, права, управление пользователями.

@@ -37,8 +37,13 @@ class SheetAuditLogController extends Controller
 
         $filters = array_filter($validated, fn ($v) => $v !== null && $v !== '');
 
+        // Вторичная сортировка по id обязательна: если несколько записей упали
+        // в одну и ту же миллисекунду (а под нагрузкой это бывает — особенно
+        // при паст'е/филле), пагинация без tie-breaker'а пропускает или
+        // дублирует записи между страницами.
         $query = SheetAuditLog::with(['user:id,name,email', 'sheet:id,name'])
-            ->orderByDesc('created_at');
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
 
         if (!empty($filters['user_id']))  $query->where('user_id', (int) $filters['user_id']);
         if (!empty($filters['sheet_id'])) $query->where('sheet_id', (int) $filters['sheet_id']);

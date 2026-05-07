@@ -10,6 +10,12 @@
 # Stage 1: Composer-зависимости
 # ============================================================
 FROM composer:2.7 AS composer-deps
+# Default Composer process timeout — 300 секунд. Этого мало на медленных
+# каналах: google/apiclient-services (~46 МБ) при 100-150 КБ/с не успевает
+# скачаться → curl error 28, потом git fallback тоже ловит timeout, билд
+# падает. 1800 секунд (30 минут) — большой запас, билд на быстром канале
+# по-прежнему пройдёт за минуту, на медленном — не упадёт.
+ENV COMPOSER_PROCESS_TIMEOUT=1800
 WORKDIR /app
 COPY composer.json composer.lock ./
 # Минимально нужные файлы для composer install (он может вызвать artisan).

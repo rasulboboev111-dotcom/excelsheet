@@ -515,9 +515,13 @@ class SheetController extends Controller
 
         // 3. Ограничение на длину одной ячейки (Excel-совместимый предел).
         // Без этого можно прислать 100k строк × 1 МБ строки = 100 ГБ в БД.
+        // Дополнительно — режем «опасные» формулы (DDE/cmd/RTD/EXEC/...). На
+        // экспорте writeSafeCellValue их экранирует, но если они осели в БД и
+        // потом откроются в чужой среде — гарантий нет. Лучше резать на input.
         foreach ($payload['rows'] ?? [] as $rowIdx => $row) {
             foreach (($row['data'] ?? []) as $field => $value) {
-                if (is_string($value) && mb_strlen($value) > self::MAX_CELL_VALUE_LENGTH) {
+                if (!is_string($value)) continue;
+                if (mb_strlen($value) > self::MAX_CELL_VALUE_LENGTH) {
                     throw \Illuminate\Validation\ValidationException::withMessages([
                         'rows' => sprintf(
                             'Значение в строке %d, колонка "%s" превышает %s символов.',
@@ -526,6 +530,14 @@ class SheetController extends Controller
                             number_format(self::MAX_CELL_VALUE_LENGTH, 0, '.', ' ')
                         ),
                     ]);
+                }
+                if (str_starts_with($value, '=')) {
+                    $body = substr($value, 1);
+                    if (str_contains($body, '|') || preg_match(self::DANGEROUS_FORMULA_REGEX, $body)) {
+                        // Сбрасываем формулу в текст — добавляем апостроф,
+                        // как Excel делает для текстовых ячеек начинающихся с =.
+                        $payload['rows'][$rowIdx]['data'][$field] = "'" . $value;
+                    }
                 }
             }
         }
@@ -813,6 +825,13 @@ class SheetController extends Controller
     }
 
     /**
+     * Лимит на pre-build: если суммарное число ячеек больше — отказываемся
+     * собирать xlsx. Gmail API роняет письма >25 МБ, плюс PhpSpreadsheet жрёт
+     * O(N) памяти на каждую ячейку. 200k ячеек ~10-20 МБ, безопасный порог.
+     */
+    private const MAX_EMAIL_ATTACHMENT_CELLS = 200_000;
+
+    /**
      * Генерит .xlsx для отправки. Возвращает массив для GmailMailerService.
      * Использует PhpSpreadsheet (уже в composer.json).
      */
@@ -820,6 +839,18 @@ class SheetController extends Controller
     {
         $columns = $sheet->columns ?? [];
         $rows = SheetData::where('sheet_id', $sheet->id)->orderBy('row_index')->get();
+
+        // Pre-check: считаем приближённый объём листа. Если получится тяжелее,
+        // чем Gmail может отправить — отказываемся ДО сборки в памяти, чтобы
+        // не убить worker и дать юзеру понятную ошибку.
+        $approxCells = max(1, count($columns)) * max(1, $rows->count());
+        if ($approxCells > self::MAX_EMAIL_ATTACHMENT_CELLS) {
+            throw new \RuntimeException(sprintf(
+                'Лист слишком большой для отправки по почте (%s ячеек, лимит %s). Скачайте .xlsx и отправьте вручную.',
+                number_format($approxCells, 0, '.', ' '),
+                number_format(self::MAX_EMAIL_ATTACHMENT_CELLS, 0, '.', ' ')
+            ));
+        }
 
         $spreadsheet = new Spreadsheet();
         $ws = $spreadsheet->getActiveSheet();
