@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, nextTick } from 'vue';
 
 const props = defineProps({
     x: Number,
@@ -13,6 +13,32 @@ const emit = defineEmits(['close', 'action']);
 
 const closeMenu = () => emit('close');
 const borderPickerOpen = ref(false);
+
+// Реальные координаты после viewport-coercion. Если меню выходит за нижний/правый
+// край экрана, открываем его «вверх» / «влево» от точки клика, чтобы все пункты
+// (включая «Σ Сумма выделения» в низу) точно были видны.
+const menuRoot = ref(null);
+const adjustedTop = ref(0);
+const adjustedLeft = ref(0);
+
+const adjustPosition = () => {
+    const el = menuRoot.value;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const margin = 4;
+    let top = props.y;
+    let left = props.x;
+    if (top + rect.height > H - margin) {
+        top = Math.max(margin, props.y - rect.height);
+    }
+    if (left + rect.width > W - margin) {
+        left = Math.max(margin, props.x - rect.width);
+    }
+    adjustedTop.value = top;
+    adjustedLeft.value = left;
+};
 
 // Те же пресеты, что в Ribbon — порядок и type синхронизированы
 const borderOptions = [
@@ -43,13 +69,21 @@ const borderIcon = (type) => {
 };
 
 onMounted(() => {
+    // Сначала рендерим в исходных x/y, потом измеряем и при нужде «отбиваем»
+    // от краёв viewport. nextTick — чтобы DOM уже был с реальной высотой
+    // (иначе getBoundingClientRect вернёт 0).
+    adjustedTop.value = props.y;
+    adjustedLeft.value = props.x;
+    nextTick(adjustPosition);
     window.addEventListener('click', closeMenu);
     window.addEventListener('contextmenu', closeMenu);
+    window.addEventListener('resize', adjustPosition);
 });
 
 onUnmounted(() => {
     window.removeEventListener('click', closeMenu);
     window.removeEventListener('contextmenu', closeMenu);
+    window.removeEventListener('resize', adjustPosition);
 });
 
 const handleAction = (action, value) => {
@@ -69,7 +103,7 @@ const pickBorder = (type) => {
 
 <template>
     <!-- Добавляем .prevent на contextmenu, чтобы браузерное меню не вылезало внутри нашего -->
-    <div class="excel-context-menu" :style="{ top: y + 'px', left: x + 'px' }" @click.stop @contextmenu.prevent>
+    <div ref="menuRoot" class="excel-context-menu" :style="{ top: adjustedTop + 'px', left: adjustedLeft + 'px' }" @click.stop @contextmenu.prevent>
         <!-- Top Formatting Bar (Cut/B/I/Color/Fill — только если можно редактировать) -->
         <div class="formatting-bar" v-if="canEdit || hasClipboard">
             <button v-if="canEdit" class="btn-cut" title="Вырезать" @click="handleAction('cut')">
@@ -140,6 +174,12 @@ const pickBorder = (type) => {
 
             <div v-if="canEdit" class="menu-item" @click="handleAction('hyperlink')">
                 <span class="icon blue">🔗</span> Гиперссылка...
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="menu-item" @click="handleAction('sum-selection')">
+                <span class="icon" style="color:#107c10; font-weight:bold;">Σ</span> Сумма выделения
             </div>
         </div>
     </div>

@@ -1541,6 +1541,81 @@ const handleRangeClear = ({ targetRows, colFields }) => {
 };
 
 const handleMenuAction = async (action, value) => {
+    // «Сумма выделения» работает и в read-only — это чисто чтение.
+    // Обрабатываем ДО проверки canEdit, чтобы read-only юзер тоже мог считать.
+    if (action === 'sum-selection') {
+        const sel = currentSelection.value;
+        let r1, r2, c1, c2;
+        if (sel) {
+            r1 = Math.min(sel.start.row, sel.end.row);
+            r2 = Math.max(sel.start.row, sel.end.row);
+            c1 = Math.min(sel.start.col, sel.end.col);
+            c2 = Math.max(sel.start.col, sel.end.col);
+        } else {
+            // Нет диапазона — берём активную ячейку.
+            const ai = activeCellInfo.value;
+            if (ai?.rowIndex == null || !ai?.colId) {
+                alert('Выделите хотя бы одну ячейку.');
+                return;
+            }
+            r1 = r2 = ai.rowIndex;
+            const colIdx = columnDefs.value.findIndex(c => c.field === ai.colId);
+            if (colIdx < 0) return;
+            c1 = c2 = colIdx;
+        }
+        // Собираем значения. Формулы (`=...`) считаем через HyperFormula —
+        // тот же движок, что в браузерных ячейках, чтобы числа совпадали.
+        let hf = null, hfSheetId = null;
+        try {
+            const { HyperFormula } = await import('hyperformula');
+            hf = HyperFormula.buildEmpty({ licenseKey: 'gpl-v3' });
+            hf.addSheet('S');
+            hfSheetId = hf.getSheetId('S');
+            const fields = columnDefs.value.map(c => c.field);
+            const data = tableData.value.map(rr => fields.map(f => (rr?.[f] ?? '')));
+            hf.setSheetContent(hfSheetId, data);
+        } catch (_) { hf = null; }
+
+        let sum = 0;
+        let countNumeric = 0;
+        for (let r = r1; r <= r2; r++) {
+            const row = tableData.value[r];
+            if (!row) continue;
+            for (let c = c1; c <= c2; c++) {
+                const field = columnDefs.value[c]?.field;
+                if (!field) continue;
+                let v = row[field];
+                // Формула — берём вычисленное значение.
+                if (hf && typeof v === 'string' && v.startsWith('=')) {
+                    try {
+                        const hv = hf.getCellValue({ sheet: hfSheetId, col: c, row: r });
+                        v = (hv && typeof hv === 'object' && 'value' in hv) ? hv.value : hv;
+                    } catch (_) { v = null; }
+                }
+                if (typeof v === 'number' && isFinite(v)) {
+                    sum += v;
+                    countNumeric++;
+                } else if (typeof v === 'string' && v.trim() !== '') {
+                    const n = parseFloat(v.replace(',', '.'));
+                    if (!isNaN(n) && isFinite(n)) {
+                        sum += n;
+                        countNumeric++;
+                    }
+                }
+            }
+        }
+        try { hf?.destroy(); } catch (_) {}
+
+        // Округляем до разумной точности (избавляемся от 0.30000000004 артефактов).
+        const sumRounded = Math.round(sum * 1e10) / 1e10;
+        const sumText = String(sumRounded);
+
+        // Кладём в буфер обмена + показываем юзеру.
+        try { navigator.clipboard?.writeText(sumText); } catch (_) {}
+        alert(`Сумма: ${sumText}\nЧисловых ячеек: ${countNumeric}\n\n(скопировано в буфер обмена)`);
+        return;
+    }
+
     // Read-only режим: разрешаем только copy.
     if (!props.canEdit && action !== 'copy') return;
     const params = cellContextMenu.value.params;

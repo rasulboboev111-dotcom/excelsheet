@@ -418,6 +418,12 @@ const onCellValueChanged = (event) => {
 
 // Range Selection Logic
 const onCellMouseDown = (params) => {
+    // Правый клик НЕ должен сбрасывать выделение — иначе перед открытием
+    // контекстного меню множественное выделение схлопывается в одну ячейку,
+    // и «Сумма выделения» считает только одну. Игнорируем right-click здесь;
+    // меню откроется через onCellContextMenu, который не трогает selection.
+    if (params.event && params.event.button === 2) return;
+
     isSelecting.value = true;
     const colIndex = props.columnDefs.findIndex(c => c.field === params.colDef.field);
     if (colIndex === -1) return; // pinned row-num column — клик обрабатывается через cellRenderer
