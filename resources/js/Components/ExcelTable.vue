@@ -649,6 +649,11 @@ const handleKeyDown = (e) => {
 
     // 1. Очистка диапазона по клавише Delete или Backspace
     if (e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace') {
+        // Read-only защита: viewer'ы не должны удалять данные клавиатурой.
+        // Просто проглатываем нажатие — не шлём range-clear, не делаем
+        // preventDefault. Это позволяет Backspace в адресной строке/инпуте
+        // браузера работать нормально (но isEventInField выше уже отсеял).
+        if (props.readOnly) return;
         if (!selectionStart.value || !selectionEnd.value) return;
         e.preventDefault();
         e.stopPropagation();

@@ -1840,6 +1840,7 @@ const findNext = () => {
 const _isFormula = (v) => typeof v === 'string' && v.startsWith('=');
 
 const replaceCurrent = () => {
+    if (!props.canEdit) return;
     const q = findText.value;
     if (!q) return;
     const { row, col } = findLastPos.value;
@@ -1858,6 +1859,7 @@ const replaceCurrent = () => {
 };
 
 const replaceAll = () => {
+    if (!props.canEdit) return;
     const q = findText.value;
     if (!q) return;
     const cols = columnDefs.value;
@@ -2637,11 +2639,13 @@ onUnmounted(() => {
             </div>
         </div>
 
-        <!-- Find & Replace -->
+        <!-- Find & Replace. Для viewer'а (без canEdit) скрываем поле «Заменить»
+             и его кнопки — оставляем только поиск, чтобы юзер мог искать по
+             таблице, но не мог изменять данные через replace. -->
         <div v-if="showFindReplace" class="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/20" @click.self="showFindReplace = false">
             <div class="bg-white rounded-lg shadow-xl w-[420px] p-4">
                 <div class="flex justify-between items-center mb-3">
-                    <h3 class="font-bold text-sm">Найти и заменить</h3>
+                    <h3 class="font-bold text-sm">{{ canEdit ? 'Найти и заменить' : 'Найти' }}</h3>
                     <button @click="showFindReplace = false" class="text-gray-500 hover:text-black">&times;</button>
                 </div>
                 <div class="space-y-2">
@@ -2649,7 +2653,7 @@ onUnmounted(() => {
                         <label class="text-xs w-16 text-gray-600">Найти:</label>
                         <input v-model="findText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#2563eb]" @keyup.enter="findNext()" />
                     </div>
-                    <div class="flex items-center gap-2">
+                    <div v-if="canEdit" class="flex items-center gap-2">
                         <label class="text-xs w-16 text-gray-600">Заменить:</label>
                         <input v-model="replaceText" type="text" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-[#2563eb]" />
                     </div>
@@ -2660,8 +2664,8 @@ onUnmounted(() => {
                 </div>
                 <div class="flex gap-2 mt-3 justify-end">
                     <button @click="findNext()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Найти далее</button>
-                    <button @click="replaceCurrent()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Заменить</button>
-                    <button @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">Заменить все</button>
+                    <button v-if="canEdit" @click="replaceCurrent()" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Заменить</button>
+                    <button v-if="canEdit" @click="replaceAll()" class="px-3 py-1 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">Заменить все</button>
                     <button @click="showFindReplace = false" class="px-3 py-1 text-sm rounded bg-gray-100 hover:bg-gray-200">Закрыть</button>
                 </div>
             </div>
