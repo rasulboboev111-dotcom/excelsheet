@@ -948,11 +948,33 @@ const filterConfigFor = (field) => {
     };
 };
 
+// Excel-style comparator: пустые ячейки ВСЕГДА внизу (независимо от направления
+// сортировки), числа сравниваются как числа, строки — через localeCompare с
+// поддержкой кириллицы и natural-numeric (а10 после а2, не после а1).
+//
+// Без этого тысячи placeholder-строк (с _client_id но без значений) лезут
+// наверх при ascending-сортировке и закрывают реальные данные → юзеру
+// кажется что таблица «исчезла».
+const excelStyleComparator = (valueA, valueB, _nodeA, _nodeB, isDescending) => {
+    const aEmpty = valueA === null || valueA === undefined || valueA === '';
+    const bEmpty = valueB === null || valueB === undefined || valueB === '';
+    if (aEmpty && bEmpty) return 0;
+    // Пустая всегда внизу. AG-Grid инвертирует возвращаемое значение при
+    // descending — поэтому возвращаем знак с учётом isDescending, иначе пустые
+    // улетят наверх при ↓-сортировке.
+    if (aEmpty) return isDescending ? -1 : 1;
+    if (bEmpty) return isDescending ? 1 : -1;
+    if (typeof valueA === 'number' && typeof valueB === 'number') return valueA - valueB;
+    // Числа в строках («10» vs «9») — natural-сортировка.
+    return String(valueA).localeCompare(String(valueB), 'ru', { numeric: true, sensitivity: 'base' });
+};
+
 const defaultColDef = {
     // sortable: true — AG-Grid рисует стрелку ▲▼ в шапке + клик меняет порядок.
     // Сортировка применяется к виду без изменения row_index в БД (это локальный
     // визуальный порядок). Filter уже был настроен — теперь оба работают.
     flex: 1, minWidth: 100, filter: 'agTextColumnFilter', sortable: true, resizable: true,
+    comparator: excelStyleComparator,
     filterParams: {
         filterOptions: ['contains', 'notContains', 'equals', 'notEqual',
                         'startsWith', 'endsWith', 'blank', 'notBlank'],

@@ -27,6 +27,25 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\HandleInertiaRequests::class,
         ]);
 
+        // TRUST PROXIES.
+        // Дефолт `*` доверяет всем proxies. Что это даёт:
+        //   • За Cloudflare / Caddy / Traefik / nginx-host реальный IP юзера
+        //     попадает в $request->ip() из X-Forwarded-For, а не IP edge-proxy.
+        //   • Throttle-middleware считает rate-limit на юзеро-IP, а не на CF-IP →
+        //     один пользователь не блокирует всех остальных за тем же CF.
+        //   • $request->isSecure() корректно возвращает true когда proxy
+        //     терминирует TLS, а до Laravel идёт plain HTTP.
+        // Безопасно потому что nginx внутри docker-сети видит только trusted
+        // upstream (CF-edge или host-proxy), снаружи без proxy на Laravel
+        // напрямую никто не попадёт.
+        $middleware->trustProxies(at: '*', headers:
+            \Illuminate\Http\Request::HEADER_X_FORWARDED_FOR
+            | \Illuminate\Http\Request::HEADER_X_FORWARDED_HOST
+            | \Illuminate\Http\Request::HEADER_X_FORWARDED_PORT
+            | \Illuminate\Http\Request::HEADER_X_FORWARDED_PROTO
+            | \Illuminate\Http\Request::HEADER_X_FORWARDED_AWS_ELB
+        );
+
         // Aliases для роутов:
         //   middleware('role:admin')   — Spatie permission, защищает /users, /audit-log и т.д.
         //   middleware('permission:X') — Spatie permission per-action checks (не используется сейчас, но пусть будет)

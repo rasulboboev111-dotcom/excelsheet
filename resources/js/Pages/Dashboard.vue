@@ -1045,18 +1045,33 @@ const handleCellValueChanged = (event) => {
     // а уже потом кладём в pending именно нашу ссылку. Иначе:
     //   1) styles/ribbon-правки идут в tableData[i], а value-правки — в копию AG-Grid;
     //   2) при flush'е в pending Set попадают ДВЕ разных ссылки → дубль row_index → 500.
-    // ExcelTable.onCellValueChanged уже конвертирует AG-Grid display-index в
-    // АБСОЛЮТНЫЙ индекс через toAbsRow() (учитывая rowPinned/freezeRow) и
-    // присылает его как node.rowIndex. Никаких дополнительных +1 здесь делать
-    // НЕ НАДО — иначе с включённым freezeRow получаем двойную конверсию,
-    // правка ячейки уезжает в соседнюю строку (визуально «текст идёт вверх/вниз»).
-    let rowIndex = node?.rowIndex ?? node?.row_index;
-    if (rowIndex == null || rowIndex < 0) rowIndex = tableData.value.indexOf(data);
-
-    let canonicalRow = (rowIndex >= 0) ? tableData.value[rowIndex] : null;
-    if (!canonicalRow && data?.id != null) {
-        const found = tableData.value.findIndex(r => r && r.id === data.id);
-        if (found !== -1) { rowIndex = found; canonicalRow = tableData.value[found]; }
+    // КРИТИЧНО: ищем строку В ПЕРВУЮ ОЧЕРЕДЬ ПО ID, а не по rowIndex.
+    // Когда юзер кликает шапку и сортирует колонку, AG-Grid отдаёт display-index
+    // в ОТСОРТИРОВАННОМ виде. tableData при этом не пересортировывается. Если
+    // взять tableData[node.rowIndex] — попадём в чужую строку → правка уедет
+    // не в ту ячейку, последующий save шлёт серверу неправильный row_index.
+    //
+    // Стабильный матч — по data.id (строки из БД) или data._client_id (новые
+    // локальные строки). rowIndex используем только если ничего не нашли по id.
+    let rowIndex = -1;
+    let canonicalRow = null;
+    if (data?.id != null) {
+        rowIndex = tableData.value.findIndex(r => r && r.id === data.id);
+        if (rowIndex >= 0) canonicalRow = tableData.value[rowIndex];
+    }
+    if (!canonicalRow && data?._client_id) {
+        rowIndex = tableData.value.findIndex(r => r && r._client_id === data._client_id);
+        if (rowIndex >= 0) canonicalRow = tableData.value[rowIndex];
+    }
+    // Fallback: ни id ни _client_id — пробуем display-index (только если сортировка
+    // не активна, иначе индекс соврёт). Самый последний шанс — indexOf(data).
+    if (!canonicalRow) {
+        let fallbackIdx = node?.rowIndex ?? node?.row_index;
+        if (fallbackIdx == null || fallbackIdx < 0) fallbackIdx = tableData.value.indexOf(data);
+        if (fallbackIdx >= 0) {
+            rowIndex = fallbackIdx;
+            canonicalRow = tableData.value[fallbackIdx];
+        }
     }
 
     if (canonicalRow && canonicalRow !== data) {

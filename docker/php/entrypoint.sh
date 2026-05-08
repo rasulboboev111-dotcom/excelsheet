@@ -81,16 +81,39 @@ if [ "${TABLES_EXIST:-0}" -gt 0 ] && [ "${PENDING_COUNT:-0}" -gt 0 ]; then
     TS=$(date +%F_%H%M%S)
     DUMP="${BACKUP_DIR}/pre-migrate_${TS}.sql.gz"
     log "Pending migrations detected → backing up DB to ${DUMP}"
+    DUMP_ERR_LOG="${BACKUP_DIR}/pre-migrate_${TS}.err"
+    # ВАЖНО: stderr НЕ глушим — пишем в .err файл, чтобы ошибка была видна
+    # в логах деплоя. Если pg_dump упал — НЕ запускаем миграцию, иначе
+    # катастрофа: миграция испортит данные и восстановить их будет нечем.
     if PGPASSWORD="${DB_PASSWORD}" pg_dump \
             -h "${DB_HOST:-postgres}" -p "${DB_PORT:-5432}" \
             -U "${DB_USERNAME:-excel_user}" -d "${DB_DATABASE:-excel_db}" \
-            --no-owner --no-privileges 2>/dev/null | gzip > "$DUMP"; then
-        log "Pre-migration backup OK ($(stat -c %s "$DUMP" 2>/dev/null || echo '?') bytes)"
-        # Чистим pre-migration снимки старше 14 дней (на каждом деплое могут копиться).
+            --no-owner --no-privileges 2>"$DUMP_ERR_LOG" | gzip > "$DUMP"; then
+        DUMP_SIZE=$(stat -c %s "$DUMP" 2>/dev/null || stat -f %z "$DUMP" 2>/dev/null || echo 0)
+        if [ "${DUMP_SIZE:-0}" -lt 1024 ]; then
+            # Дамп подозрительно маленький (меньше 1 КБ) — что-то пошло не так.
+            log "FATAL: pg_dump exit code 0, но размер дампа ${DUMP_SIZE} байт. Это меньше КБ — что-то сломалось."
+            log "FATAL: stderr pg_dump'а:"
+            cat "$DUMP_ERR_LOG" >&2 || true
+            log "FATAL: ОТКАЗЫВАЕМСЯ запускать миграцию, чтобы не уничтожить данные."
+            log "FATAL: Разберись с pg_dump, удали неполный дамп ${DUMP}, перезапусти контейнер."
+            exit 1
+        fi
+        log "Pre-migration backup OK (${DUMP_SIZE} bytes)"
+        rm -f "$DUMP_ERR_LOG"
+        # Чистим pre-migration снимки старше 14 дней.
         find "$BACKUP_DIR" -name 'pre-migrate_*.sql.gz' -mtime +14 -delete 2>/dev/null || true
+        find "$BACKUP_DIR" -name 'pre-migrate_*.err'   -mtime +14 -delete 2>/dev/null || true
     else
-        log "WARN: pg_dump failed, but continuing — миграция всё равно запустится."
-        log "WARN: Если миграция испортит данные — восстановления не будет!"
+        log "FATAL: pg_dump УПАЛ. Подробности:"
+        cat "$DUMP_ERR_LOG" >&2 || true
+        log "FATAL: ОТКАЗЫВАЕМСЯ запускать миграцию без бэкапа."
+        log "FATAL: Возможные причины:"
+        log "FATAL:   • Postgres недоступен (проверь host/port/credentials)"
+        log "FATAL:   • Кончилось место на диске (df -h в backup-data volume)"
+        log "FATAL:   • DB_PASSWORD в .env не совпадает с postgres-volume'ом"
+        log "FATAL: Реши проблему и перезапусти контейнер."
+        exit 1
     fi
 else
     log "First deploy or no pending migrations — skipping pre-migration backup."

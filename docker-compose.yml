@@ -223,7 +223,12 @@ services:
       BACKUP_RETENTION_LOCAL_DAYS: ${BACKUP_RETENTION_LOCAL_DAYS:-30}
       BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
     volumes:
-      - backup-data:/backups
+      # ./backups — bind-mount в папку проекта на хосте. Намеренно НЕ named volume:
+      # named volume легко удалить через `docker compose down -v` или потерять при
+      # пересоздании Docker Desktop, плюс его не видно из ОС для off-site копирования
+      # через rsync/cron. Папка ./backups видна в файлменеджере, легко скопировать
+      # на сетевой диск, USB или настроить syncthing/rclone-host.
+      - ./backups:/backups
       - backup-rclone-config:/root/.config/rclone
     depends_on:
       postgres:
@@ -247,5 +252,4 @@ volumes:
   postgres-data:
   redis-data:
   app-storage:
-  backup-data:
   backup-rclone-config:

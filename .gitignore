@@ -19,3 +19,6 @@ yarn-error.log
 /.nginx
 # Артефакты сборки от прошлых .ini правок
 *.ini.bak.*
+# Бэкапы Postgres (bind-mount из docker-compose backup-сервиса).
+# Внутри лежат .sql.gz — на сервере сами по себе ценные, но в git не место.
+/backups
