@@ -101,6 +101,37 @@ services:
       - excel
 
   # =====================================================
+  # Queue worker — обрабатывает очередь redis (отправка email через
+  # Gmail API и любые будущие async-задачи). Без воркера задачи копятся
+  # в Redis, юзер видит мгновенный ответ, но письма не уходят.
+  # `--tries=3 --backoff=10` — ретраи при сбоях Gmail API.
+  # `--timeout=120` — на 50К строк xlsx нужно время.
+  # =====================================================
+  queue:
+    image: excel-app:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - app-storage:/var/www/html/storage
+    depends_on:
+      app:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "[queue] starting worker";
+        exec php artisan queue:work redis --tries=3 --backoff=10 --timeout=120 --sleep=3 --max-time=3600
+    networks:
+      - excel
+
+  # =====================================================
   # Laravel scheduler — запускает audit-log:cleanup и любые
   # будущие cron-задачи. Просто бесконечный цикл `schedule:run`.
   # =====================================================

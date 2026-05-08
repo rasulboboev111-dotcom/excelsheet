@@ -766,25 +766,30 @@ class SheetController extends Controller
         }
         $body = implode("\r\n", $bodyLines);
 
-        // Генерим .xlsx если нужно.
+        // Генерим .xlsx СИНХРОННО (валидируем размер до постановки в очередь —
+        // если лист огромный, юзер сразу получит ошибку, а не «отправлено» с
+        // последующим тихим failure в worker'е).
         $attachment = null;
         if (($payload['attach_xlsx'] ?? true)) {
-            $attachment = $this->buildXlsxAttachment($sheet);
+            try {
+                $attachment = $this->buildXlsxAttachment($sheet);
+            } catch (\RuntimeException $e) {
+                return response()->json(['errors' => ['gmail' => [$e->getMessage()]]], 422);
+            }
         }
 
-        try {
-            $mailer->send($user, $payload['to'], $subject, $body, $attachment, isHtml: false);
-        } catch (\RuntimeException $e) {
-            // Логируем причину чтобы в laravel.log было видно что именно упало.
-            \Log::warning('Gmail send failed', [
-                'user_id'   => $user->id,
-                'to'        => $payload['to'],
-                'sheet_id'  => $sheet->id,
-                'error'     => $e->getMessage(),
-            ]);
-            // JSON 422 чтобы axios зашёл в catch (back()->withErrors даёт 302 → axios думает успех).
-            return response()->json(['errors' => ['gmail' => [$e->getMessage()]]], 422);
-        }
+        // Отправку отдаём в очередь — Gmail API + сетевые retries блокируют
+        // запрос на 1-3 секунды в норме и до 10+ секунд при тротлинге.
+        // С QUEUE_CONNECTION=redis юзер получит «отправлено» за ~50 мс,
+        // worker отработает фоном (с retries=3, см. SendSheetEmailJob).
+        \App\Jobs\SendSheetEmailJob::dispatch(
+            $user,
+            $sheet,
+            $payload['to'],
+            $subject,
+            $body,
+            $attachment,
+        );
 
         $this->logAudit('sheet_emailed', $sheet->id, [
             'to'           => $payload['to'],
