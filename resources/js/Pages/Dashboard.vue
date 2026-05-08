@@ -142,8 +142,13 @@ const commentDialog = reactive({
 });
 
 // --- Sheet meta (merges, validations, colWidths, rowHeights, hidden) ---
+// Инициализирующая meta приходит от сервера в props.activeSheet.meta — composable
+// использует её как стартовое состояние, дальше любые изменения PATCH'атся
+// обратно (debounce 400ms). При смене листа — сохраняем pending для старого,
+// грузим новый.
 const activeSheetId = computed(() => props.activeSheet?.id);
-const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId);
+const activeSheetMeta = computed(() => props.activeSheet?.meta || null);
+const { meta: sheetMeta, setMetaFor } = useSheetMeta(activeSheetId, activeSheetMeta);
 
 // При смене листа закрываем панель просмотра строки — снимок принадлежал старому листу.
 watch(activeSheetId, () => { inspectedRow.value = null; });

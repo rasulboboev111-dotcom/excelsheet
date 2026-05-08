@@ -608,6 +608,37 @@ class SheetController extends Controller
         return back();
     }
 
+    /**
+     * PATCH /sheets/{sheet}/meta — обновляет per-sheet UI meta (merges,
+     * colWidths, rowHeights, freezeRow/Col, validations, hidden).
+     * Принимает целиком объект — фронт держит снимок и шлёт его при изменениях
+     * (debounce 300мс). Отдельных операций add-merge / remove-merge нет, так
+     * проще: каждый PATCH полностью перезаписывает meta. БД-jsonb колонка.
+     */
+    public function updateMeta(Request $request, Sheet $sheet)
+    {
+        $this->authorizeEdit($sheet);
+
+        $payload = $request->validate([
+            'meta'                  => 'required|array',
+            'meta.merges'           => 'sometimes|array',
+            'meta.merges.*.row'     => 'required_with:meta.merges|integer|min:0|max:' . self::MAX_ROW_INDEX,
+            'meta.merges.*.col'     => 'required_with:meta.merges|integer|min:0|max:' . self::MAX_IMPORT_COLS,
+            'meta.merges.*.rowSpan' => 'required_with:meta.merges|integer|min:1|max:' . self::MAX_ROW_INDEX,
+            'meta.merges.*.colSpan' => 'required_with:meta.merges|integer|min:1|max:' . self::MAX_IMPORT_COLS,
+            'meta.colWidths'        => 'sometimes|array|max:' . self::MAX_IMPORT_COLS,
+            'meta.rowHeights'       => 'sometimes|array|max:' . self::MAX_UPDATE_ROWS,
+            'meta.freezeRow'        => 'sometimes|boolean',
+            'meta.freezeCol'        => 'sometimes|boolean',
+            'meta.hidden'           => 'sometimes|boolean',
+            'meta.validations'      => 'sometimes|array|max:' . self::MAX_IMPORT_COLS,
+        ]);
+
+        $sheet->update(['meta' => $payload['meta']]);
+
+        return response()->json(['ok' => true]);
+    }
+
     public function destroy(Sheet $sheet)
     {
         // Удаление листа = admin only (строже, чем edit).
@@ -766,37 +797,43 @@ class SheetController extends Controller
         }
         $body = implode("\r\n", $bodyLines);
 
-        // Генерим .xlsx СИНХРОННО (валидируем размер до постановки в очередь —
-        // если лист огромный, юзер сразу получит ошибку, а не «отправлено» с
-        // последующим тихим failure в worker'е).
-        $attachment = null;
-        if (($payload['attach_xlsx'] ?? true)) {
-            try {
-                $attachment = $this->buildXlsxAttachment($sheet);
-            } catch (\RuntimeException $e) {
-                return response()->json(['errors' => ['gmail' => [$e->getMessage()]]], 422);
+        // Pre-check размера ДО постановки в очередь — если лист слишком большой,
+        // юзер сразу получит понятную ошибку 422, а не «отправлено» + молчаливый
+        // failure в worker'е. Считаем приближённое число ячеек и сравниваем с
+        // лимитом MAX_EMAIL_ATTACHMENT_CELLS (см. buildXlsxAttachment).
+        $includeAttachment = (bool) ($payload['attach_xlsx'] ?? true);
+        if ($includeAttachment) {
+            $approxCells = max(1, count($sheet->columns ?? []))
+                * max(1, SheetData::where('sheet_id', $sheet->id)->count());
+            if ($approxCells > self::MAX_EMAIL_ATTACHMENT_CELLS) {
+                return response()->json(['errors' => ['gmail' => [sprintf(
+                    'Лист слишком большой для отправки по почте (%s ячеек, лимит %s). Скачайте .xlsx и отправьте вручную.',
+                    number_format($approxCells, 0, '.', ' '),
+                    number_format(self::MAX_EMAIL_ATTACHMENT_CELLS, 0, '.', ' ')
+                )]]], 422);
             }
         }
 
-        // Отправку отдаём в очередь — Gmail API + сетевые retries блокируют
-        // запрос на 1-3 секунды в норме и до 10+ секунд при тротлинге.
-        // С QUEUE_CONNECTION=redis юзер получит «отправлено» за ~50 мс,
-        // worker отработает фоном (с retries=3, см. SendSheetEmailJob).
+        // Отправку отдаём в очередь. Job сам соберёт xlsx в handle() — это
+        // КРИТИЧНО: если бы мы передавали бинарь сюда, Laravel при createPayload
+        // упирался бы в JSON-encode (xlsx-байты не UTF-8) → InvalidPayloadException.
+        // С QUEUE_CONNECTION=redis юзер получит «отправлено» за ~50 мс, worker
+        // отработает фоном (retries=3, см. SendSheetEmailJob).
         \App\Jobs\SendSheetEmailJob::dispatch(
             $user,
             $sheet,
             $payload['to'],
             $subject,
             $body,
-            $attachment,
+            $includeAttachment,
         );
 
         $this->logAudit('sheet_emailed', $sheet->id, [
-            'to'           => $payload['to'],
-            'subject'      => $subject,
-            'has_attachment' => $attachment !== null,
-            'attachment_kb' => $attachment ? (int) round(strlen($attachment['data']) / 1024) : 0,
-            'sender_gmail' => $user->google_email,
+            'to'             => $payload['to'],
+            'subject'        => $subject,
+            'has_attachment' => $includeAttachment,
+            'sender_gmail'   => $user->google_email,
+            'queued'         => true,
         ]);
 
         return response()->json(['ok' => true]);

@@ -65,6 +65,10 @@ return [
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'days' => (int) env('LOG_DAILY_DAYS', 14),
+            // JSON-формат вместо текста: каждая строка = один JSON-объект,
+            // удобно для Loki / ELK / Grafana parsing. Tap-класс ставит
+            // JsonFormatter на все handlers. Отключается через LOG_JSON=false.
+            'tap' => [\App\Logging\JsonFormatterTap::class],
         ],
 
         'slack' => [

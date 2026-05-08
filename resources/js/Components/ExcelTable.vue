@@ -949,7 +949,10 @@ const filterConfigFor = (field) => {
 };
 
 const defaultColDef = {
-    flex: 1, minWidth: 100, filter: 'agTextColumnFilter', sortable: false, resizable: true,
+    // sortable: true — AG-Grid рисует стрелку ▲▼ в шапке + клик меняет порядок.
+    // Сортировка применяется к виду без изменения row_index в БД (это локальный
+    // визуальный порядок). Filter уже был настроен — теперь оба работают.
+    flex: 1, minWidth: 100, filter: 'agTextColumnFilter', sortable: true, resizable: true,
     filterParams: {
         filterOptions: ['contains', 'notContains', 'equals', 'notEqual',
                         'startsWith', 'endsWith', 'blank', 'notBlank'],

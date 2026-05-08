@@ -37,6 +37,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # Проверяем что PHP-FPM слушает порт 9000. fsockopen — встроенный в PHP,
+      # не требует дополнительных пакетов. start_period большой потому что
+      # entrypoint делает migrations + cache + pre-migration backup до старта
+      # fpm — это может занять ~30-60 секунд на медленном диске.
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     networks:
       - excel
 
@@ -54,7 +64,16 @@ services:
       # (например "127.0.0.1:8080:80"), чтобы наружу выйти можно было только через прокси.
       - "${NGINX_PORT:-80}:80"
     depends_on:
-      - app
+      app:
+        condition: service_healthy
+    healthcheck:
+      # / отдаёт redirect на /login или dashboard — оба коды 2xx/3xx.
+      # 3-секундный timeout на случай медленного PHP-FPM.
+      test: ["CMD-SHELL", "wget -q -O /dev/null --timeout=3 http://localhost/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - excel
 
@@ -128,6 +147,14 @@ services:
       - |
         echo "[queue] starting worker";
         exec php artisan queue:work redis --tries=3 --backoff=10 --timeout=120 --sleep=3 --max-time=3600
+    healthcheck:
+      # Worker считается живым, если может пингануть Redis (откуда берёт задачи).
+      # Если Redis недоступен — worker всё равно крутится, но бесполезно — лучше рестарт.
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(getenv(\"REDIS_HOST\"), (int)(getenv(\"REDIS_PORT\")?:6379)) ? 0 : 1);'"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - excel
 
@@ -156,10 +183,59 @@ services:
       - |
         # Не делаем migrate — это уже сделал app-контейнер.
         echo "[scheduler] starting loop";
+        # Touch heartbeat-файл при каждом тике, чтобы healthcheck видел что петля жива.
         while true; do
+          touch /tmp/scheduler.heartbeat;
           php artisan schedule:run >/dev/null 2>&1;
           sleep 60;
         done
+    healthcheck:
+      # Проверяем что heartbeat-файл обновлялся за последние 90 секунд (петля
+      # тикает раз в ~60s + sleep, +30s запас). Если зависла — рестарт.
+      test: ["CMD-SHELL", "test -f /tmp/scheduler.heartbeat && [ $(($(date +%s) - $(stat -c %Y /tmp/scheduler.heartbeat))) -lt 90 ] || exit 1"]
+      interval: 60s
+      timeout: 3s
+      retries: 2
+      start_period: 30s
+    networks:
+      - excel
+
+  # =====================================================
+  # Backup — ежедневный pg_dump в named volume + опциональная отгрузка в S3.
+  # Чтобы включить S3 — пропиши в .env:
+  #   BACKUP_RCLONE_REMOTE=s3:my-bucket/excel    (имя remote'а должно быть в rclone.conf)
+  # rclone.conf монтируется через volume `backup-rclone-config` —
+  # docker compose run --rm backup rclone config  → пройти setup один раз.
+  # Если BACKUP_RCLONE_REMOTE не задан — бэкапы только локальные (volume).
+  # =====================================================
+  backup:
+    build:
+      context: ./docker/backup
+    image: excel-backup:latest
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-excel_db}
+      DB_USERNAME: ${DB_USERNAME:-excel_user}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      BACKUP_CRON: ${BACKUP_CRON:-0 3 * * *}
+      BACKUP_RETENTION_LOCAL_DAYS: ${BACKUP_RETENTION_LOCAL_DAYS:-30}
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
+    volumes:
+      - backup-data:/backups
+      - backup-rclone-config:/root/.config/rclone
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # crond живой → процесс crond есть в /proc. Альтернатива — pgrep crond,
+      # но pgrep в alpine из procps; pidof busybox-friendly.
+      test: ["CMD-SHELL", "pidof crond > /dev/null || exit 1"]
+      interval: 60s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     networks:
       - excel
 
@@ -171,3 +247,5 @@ volumes:
   postgres-data:
   redis-data:
   app-storage:
+  backup-data:
+  backup-rclone-config:

@@ -32,6 +32,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::patch('/sheets/{sheet}', [SheetController::class, 'update'])
         ->middleware('throttle:60,1')
         ->name('sheets.update');
+    // Per-sheet UI meta (merges, colWidths, rowHeights, freezeRow/Col, …).
+    // Throttle мягче чем на data — meta обновляется реже (drag column resize,
+    // переключение freeze, объединение ячеек).
+    Route::patch('/sheets/{sheet}/meta', [SheetController::class, 'updateMeta'])
+        ->middleware('throttle:120,1')
+        ->name('sheets.updateMeta');
     // Throttle: не более 60 запросов/мин на пользователя — защита от случайного
     // DoS, если пользователь триггернёт массовую перевыгрузку через экспорт.
     Route::get('/sheets/{sheet}/data', [SheetController::class, 'fetchData'])

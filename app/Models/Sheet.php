@@ -21,10 +21,14 @@ class Sheet extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['name', 'user_id', 'order', 'columns'];
+    protected $fillable = ['name', 'user_id', 'order', 'columns', 'meta'];
 
     protected $casts = [
         'columns' => 'array',
+        // Per-sheet UI meta: merges, colWidths, rowHeights, freezeRow/Col,
+        // validations, hidden. Раньше жило в localStorage отдельных юзеров —
+        // теперь shared через БД, изменения видны всем.
+        'meta'    => 'array',
     ];
 
     public function data()

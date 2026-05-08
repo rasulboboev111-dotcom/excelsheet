@@ -1,6 +1,10 @@
 import { ref, watch } from 'vue';
+import axios from 'axios';
 
-const KEY = (id) => `excel_sheet_meta_${id}`;
+// Per-sheet UI meta: merges, colWidths, rowHeights, freezeRow/Col, validations, hidden.
+// Хранится В БД (sheets.meta jsonb). Раньше жило в localStorage отдельных юзеров —
+// другие пользователи того же листа не видели объединений/закреплений → баг.
+// Теперь shared: каждый меняет → виден всем после переоткрытия листа.
 
 const empty = () => ({
     merges: [],          // [{ row, col, rowSpan, colSpan }]
@@ -9,110 +13,106 @@ const empty = () => ({
     rowHeights: {},      // { [rowIndex]: number }
     hidden: false,
     freezeRow: false,    // закрепить первую строку
-    freezeCol: false     // закрепить первую колонку
+    freezeCol: false,    // закрепить первую колонку
 });
 
-export function useSheetMeta(sheetIdRef) {
+/**
+ * @param {import('vue').Ref<number|null>} sheetIdRef — id активного листа.
+ * @param {import('vue').Ref<object|null>} initialMetaRef — meta, пришедшая от
+ *   сервера в Inertia-render'е (props.activeSheet.meta). Меняется при смене
+ *   листа — composable подхватит и заменит локальное состояние.
+ */
+export function useSheetMeta(sheetIdRef, initialMetaRef = null) {
     const meta = ref(empty());
+    let _suppressSave = false;
 
-    const load = (id) => {
-        if (!id) { meta.value = empty(); return; }
-        try {
-            const raw = localStorage.getItem(KEY(id));
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                // Чистим устаревшие поля от удалённых фич, чтобы не таскать мусор в localStorage.
-                if (parsed && typeof parsed === 'object') delete parsed.conditionalRules;
-                meta.value = { ...empty(), ...parsed };
-            } else {
-                meta.value = empty();
-            }
-        } catch (_) { meta.value = empty(); }
+    const load = (initial) => {
+        _suppressSave = true;
+        meta.value = { ...empty(), ...(initial && typeof initial === 'object' ? initial : {}) };
+        // Снимаем флаг через микротик — иначе deep-watch успеет сработать на
+        // ту же мутацию и зальёт meta обратно на сервер впустую.
+        Promise.resolve().then(() => { _suppressSave = false; });
     };
 
-    // Запись на диск: захватываем id и снапшот меты СИНХРОННО на момент scheduleSave,
-    // потом откладываем сам localStorage.setItem на idle. Это защищает от гонки при
-    // быстром переключении листов: если в момент idle-callback'а meta.value уже
-    // содержит данные другого листа — мы всё равно запишем правильный снимок под
-    // правильным ключом.
-    let _idleHandle = null;
-    let _idleHandleType = null; // 'idle' | 'timeout'
-    const _cancelIdle = () => {
-        if (_idleHandle == null) return;
-        if (_idleHandleType === 'idle' && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
-            window.cancelIdleCallback(_idleHandle);
-        } else if (_idleHandleType === 'timeout') {
-            clearTimeout(_idleHandle);
-        }
-        _idleHandle = null;
-        _idleHandleType = null;
-    };
-    const _idleSchedule = (cb) => {
-        _cancelIdle();
-        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-            _idleHandleType = 'idle';
-            _idleHandle = window.requestIdleCallback(cb, { timeout: 1000 });
-        } else {
-            _idleHandleType = 'timeout';
-            _idleHandle = setTimeout(cb, 0);
-        }
-    };
-
-    const save = () => {
+    // Дебаунс PATCH: drag-resize колонки даёт десятки мутаций rowHeights/colWidths.
+    // На каждый из них слать PATCH перебор. 400ms — баланс между «не теряем при
+    // быстром закрытии» и «не дубасим сервер».
+    let _saveTimer = null;
+    const SAVE_DEBOUNCE_MS = 400;
+    const flushSave = () => {
+        if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
         const id = sheetIdRef.value;
         if (!id) return;
-        // СНАПШОТ — JSON.stringify тут, не в idle. Сериализация даёт стабильную
-        // строку, идущую под зафиксированным ключом id, независимо от того, что
-        // случится с meta.value до момента записи.
-        let snapshot;
-        try { snapshot = JSON.stringify(meta.value); } catch (_) { return; }
-        _idleSchedule(() => {
-            _idleHandle = null;
-            _idleHandleType = null;
-            try { localStorage.setItem(KEY(id), snapshot); } catch (_) {}
+        const snapshot = JSON.parse(JSON.stringify(meta.value));
+        // route()-helper доступен глобально через Ziggy.
+        const url = (typeof route === 'function') ? route('sheets.updateMeta', id) : `/sheets/${id}/meta`;
+        axios.patch(url, { meta: snapshot }).catch((e) => {
+            // 403 — viewer без canEdit. 422 — валидация не прошла. И в том, и в
+            // другом случае молча пропускаем: meta сохраняется только тем, кто
+            // имеет право редактировать. Логируем чтобы было видно при дебаге.
+            if (e?.response?.status !== 403) {
+                console.warn('[useSheetMeta] PATCH failed:', e?.response?.status, e?.response?.data);
+            }
+        });
+    };
+    const scheduleSave = () => {
+        if (_suppressSave) return;
+        if (_saveTimer) clearTimeout(_saveTimer);
+        _saveTimer = setTimeout(() => { _saveTimer = null; flushSave(); }, SAVE_DEBOUNCE_MS);
+    };
+
+    // При смене активного листа — досылаем pending save для старого, затем
+    // загружаем meta нового. Без этого debounce-таймер срабатывал бы уже
+    // после переключения, заливал бы новую meta под старым ID → каша.
+    watch(sheetIdRef, (newId, oldId) => {
+        if (oldId && oldId !== newId && _saveTimer) {
+            clearTimeout(_saveTimer); _saveTimer = null;
+            // Синхронный flush для старого листа (через axios — не блокирующе,
+            // но Promise pending уже улетел до load'а нового).
+            const oldUrl = (typeof route === 'function') ? route('sheets.updateMeta', oldId) : `/sheets/${oldId}/meta`;
+            const snap = JSON.parse(JSON.stringify(meta.value));
+            axios.patch(oldUrl, { meta: snap }).catch(() => {});
+        }
+        load(initialMetaRef ? initialMetaRef.value : null);
+    }, { immediate: true });
+
+    // Когда сервер отдаёт новый initialMeta (Inertia partial reload) — подхватываем.
+    if (initialMetaRef) {
+        watch(initialMetaRef, (newMeta) => {
+            if (sheetIdRef.value) load(newMeta);
+        });
+    }
+
+    watch(meta, scheduleSave, { deep: true });
+
+    // Beforeunload — досылаем pending. Иначе drag-resize → мгновенное закрытие
+    // вкладки → последняя ширина потеряна.
+    if (typeof window !== 'undefined') {
+        window.addEventListener('beforeunload', () => {
+            if (_saveTimer) {
+                clearTimeout(_saveTimer); _saveTimer = null;
+                const id = sheetIdRef.value;
+                if (id) {
+                    const url = (typeof route === 'function') ? route('sheets.updateMeta', id) : `/sheets/${id}/meta`;
+                    try {
+                        const blob = new Blob([JSON.stringify({ meta: meta.value })], { type: 'application/json' });
+                        navigator.sendBeacon?.(url, blob);
+                    } catch (_) {}
+                }
+            }
+        });
+    }
+
+    // Используется при импорте: только что созданный лист (только-что вернулся
+    // id с сервера) → нужно сразу же залить ему сгенерированную meta (merges,
+    // colWidths из xlsx). PATCH идёт сразу, без debounce.
+    const setMetaFor = (id, data) => {
+        const merged = { ...empty(), ...data };
+        const url = (typeof route === 'function') ? route('sheets.updateMeta', id) : `/sheets/${id}/meta`;
+        return axios.patch(url, { meta: merged }).catch((e) => {
+            console.warn('[useSheetMeta] setMetaFor failed:', e?.response?.status);
         });
     };
 
-    // Дебаунс: ввод значения в ячейку → ребилд rowHeights/colWidths… не должен на каждое
-    // нажатие лезть в localStorage с JSON.stringify огромного объекта. Записываем не чаще раз/300мс.
-    let _saveTimer = null;
-    const scheduleSave = () => {
-        if (_saveTimer) clearTimeout(_saveTimer);
-        _saveTimer = setTimeout(() => { _saveTimer = null; save(); }, 300);
-    };
-
-    // Загружая, флагом блокируем обратное сохранение (которое иначе сразу же
-    // запишет только что прочитанное значение из watch deep).
-    let _loading = false;
-    const safeLoad = (id) => { _loading = true; load(id); _loading = false; };
-
-    // Перед сменой листа — досылаем pending save СИНХРОННО, потом грузим новый.
-    // Иначе debounce-таймер выстрелит уже после того, как meta.value заменится
-    // на содержимое нового листа, и мы запишем чужие данные под старым ключом.
-    watch(sheetIdRef, (newId, oldId) => {
-        if (oldId !== undefined && oldId !== null) {
-            if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
-            _cancelIdle();
-            // Прямая синхронная запись для предыдущего листа.
-            try { localStorage.setItem(KEY(oldId), JSON.stringify(meta.value)); } catch (_) {}
-        }
-        safeLoad(newId);
-    }, { immediate: true });
-    watch(meta, () => { if (!_loading) scheduleSave(); }, { deep: true });
-
-    const allMetaForExport = () => {
-        const result = {};
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith('excel_sheet_meta_')) {
-                try { result[k.replace('excel_sheet_meta_', '')] = JSON.parse(localStorage.getItem(k)); } catch (_) {}
-            }
-        }
-        return result;
-    };
-    const setMetaFor = (id, data) => {
-        try { localStorage.setItem(KEY(id), JSON.stringify({ ...empty(), ...data })); } catch (_) {}
-    };
-
-    return { meta, load, save, allMetaForExport, setMetaFor };
+    return { meta, setMetaFor };
 }

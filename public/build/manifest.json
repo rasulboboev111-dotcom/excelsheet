@@ -190,7 +190,7 @@
       "node_modules/hyperformula/es/index.mjs",
       "node_modules/hyperformula/es/index.mjs"
     ],
-    "file": "assets/Dashboard-18eafe03.js",
+    "file": "assets/Dashboard-bfd55524.js",
     "imports": [
       "resources/js/app.js",
       "_ag-grid-56e7b773.js",
@@ -295,7 +295,7 @@
       "resources/js/Pages/Users/Index.vue",
       "resources/js/Pages/Welcome.vue"
     ],
-    "file": "assets/app-2c93280a.js",
+    "file": "assets/app-8770adbb.js",
     "imports": [
       "_exceljs-4454f5ce.js",
       "_ag-grid-56e7b773.js",

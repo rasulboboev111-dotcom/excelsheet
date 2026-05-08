@@ -69,6 +69,7 @@ RUN npm run build
 FROM php:8.2-fpm-bookworm AS app
 
 # Системные утилиты + install-php-extensions.
+# postgresql-client добавлен для pg_dump в pre-migration backup в entrypoint.sh.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -77,6 +78,7 @@ RUN apt-get update \
         unzip \
         zip \
         tini \
+        postgresql-client \
     && curl -sSLo /usr/local/bin/install-php-extensions \
         https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions \
     && chmod +x /usr/local/bin/install-php-extensions \

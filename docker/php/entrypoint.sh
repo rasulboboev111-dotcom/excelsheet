@@ -59,7 +59,44 @@ if [ -z "${APP_KEY:-}" ] || [ "${APP_KEY:-}" = "base64:" ]; then
     fi
 fi
 
-# 4. Миграции. --force нужно потому что APP_ENV=production.
+# 4. Pre-migration backup. ЕСЛИ таблицы уже есть (это апдейт, не первый деплой)
+# — снимаем pg_dump в /var/www/html/storage/pre-migration-backups до накатывания
+# миграций. Если миграция испортит данные / упадёт посредине / понадобится
+# rollback — есть откуда восстановить ровно тот state, что был ДО.
+# Skip на первом деплое (миграций ещё нет → нечего бэкапить).
+BACKUP_DIR="/var/www/html/storage/pre-migration-backups"
+mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+PENDING_COUNT=$(php artisan migrate:status --pending 2>/dev/null | grep -c "Pending" || echo 0)
+TABLES_EXIST=$(php -r "
+    \$dsn = 'pgsql:host=' . (getenv('DB_HOST') ?: 'postgres')
+          . ';port=' . (getenv('DB_PORT') ?: '5432')
+          . ';dbname=' . (getenv('DB_DATABASE') ?: 'excel_db');
+    try {
+        \$pdo = new PDO(\$dsn, getenv('DB_USERNAME'), getenv('DB_PASSWORD'));
+        \$n = \$pdo->query(\"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'\")->fetchColumn();
+        echo \$n;
+    } catch (Throwable \$e) { echo 0; }
+" 2>/dev/null)
+if [ "${TABLES_EXIST:-0}" -gt 0 ] && [ "${PENDING_COUNT:-0}" -gt 0 ]; then
+    TS=$(date +%F_%H%M%S)
+    DUMP="${BACKUP_DIR}/pre-migrate_${TS}.sql.gz"
+    log "Pending migrations detected → backing up DB to ${DUMP}"
+    if PGPASSWORD="${DB_PASSWORD}" pg_dump \
+            -h "${DB_HOST:-postgres}" -p "${DB_PORT:-5432}" \
+            -U "${DB_USERNAME:-excel_user}" -d "${DB_DATABASE:-excel_db}" \
+            --no-owner --no-privileges 2>/dev/null | gzip > "$DUMP"; then
+        log "Pre-migration backup OK ($(stat -c %s "$DUMP" 2>/dev/null || echo '?') bytes)"
+        # Чистим pre-migration снимки старше 14 дней (на каждом деплое могут копиться).
+        find "$BACKUP_DIR" -name 'pre-migrate_*.sql.gz' -mtime +14 -delete 2>/dev/null || true
+    else
+        log "WARN: pg_dump failed, but continuing — миграция всё равно запустится."
+        log "WARN: Если миграция испортит данные — восстановления не будет!"
+    fi
+else
+    log "First deploy or no pending migrations — skipping pre-migration backup."
+fi
+
+# 5. Миграции. --force нужно потому что APP_ENV=production.
 # migrate идемпотентен: новые миграции накатятся, старые пропустятся.
 log "Running migrations..."
 php artisan migrate --force --no-interaction
