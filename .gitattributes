@@ -1,5 +1,10 @@
 * text=auto
 
+# Shell scripts MUST have LF endings — Linux containers fail with CRLF
+# (`/usr/bin/env: 'bash\r': No such file or directory`).
+*.sh text eol=lf
+docker/**/entrypoint* text eol=lf
+
 *.blade.php diff=html
 *.css diff=css
 *.html diff=html
