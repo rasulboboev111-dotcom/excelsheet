@@ -40,7 +40,14 @@ const hf = HyperFormula.buildEmpty({ licenseKey: 'gpl-v3' });
 const onGridReady = (params) => {
     gridApi.value = params.api;
     emit('ready', params.api);
-    setTimeout(() => { updateHFData(); }, 0);
+    // После первой инициализации HF принудительно перерисовываем все ячейки —
+    // иначе формулы, отрендеренные ДО setSheetContent, показывают `#VALUE!`
+    // (HF бросал out-of-bounds на пустом листе). Клик по ячейке потом «лечил»
+    // это сам, но юзеру лучше видеть результат сразу.
+    setTimeout(() => {
+        updateHFData();
+        gridApi.value?.refreshCells({ force: true });
+    }, 0);
 };
 
 // Стабильный id для каждой строки. БЕЗ него AG-Grid v35 при любой реактивной
@@ -1103,6 +1110,26 @@ const finalColumnDefs = computed(() => {
 
     return [rowNumCol, ...mainCols];
 });
+
+// Экспозим helper для родителя (Dashboard) — нужно вычислять формулы при
+// сохранении, чтобы в журнале/диалоге хранился вычисленный результат, а не
+// сырой `=A1+B1`. row — индекс относительно rowData (без учёта freezeRow),
+// field — имя колонки (A, B, ...). Возвращает значение или null если HF
+// не смог вычислить (битая формула, out-of-bounds, и т.п.).
+const evalFormula = (row, field) => {
+    const sheetId = hf.getSheetId('Sheet1');
+    if (sheetId === undefined) return null;
+    const colIndex = props.columnDefs.findIndex(c => c.field === field);
+    if (colIndex === -1) return null;
+    const rowIndex = props.freezeRow ? row + 1 : row;
+    try {
+        const v = hf.getCellValue({ sheet: sheetId, col: colIndex, row: rowIndex });
+        if (v instanceof Error) return null;
+        return v;
+    } catch (_) { return null; }
+};
+
+defineExpose({ evalFormula });
 </script>
 
 <template>

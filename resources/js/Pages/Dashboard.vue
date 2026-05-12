@@ -7,7 +7,7 @@ import ExcelContextMenu from '@/Components/ExcelContextMenu.vue';
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { useSheetMeta } from '@/Composables/useSheetMeta';
-import { readXlsxFile, writeXlsxFile } from '@/Composables/xlsxIO';
+import { readXlsxFile, writeXlsxFile, excelSerialToDate } from '@/Composables/xlsxIO';
 
 const vFocus = {
     mounted: (el) => el.focus()
@@ -68,6 +68,9 @@ const currentCellData = ref({ value: '', position: '', rowIndex: null, colId: nu
 const isFormulaBarUpdating = ref(false);
 const activeCellInfo = ref({ rowIndex: null, colId: null, rowData: null, style: {} });
 const tableApi = ref(null);
+// Ref на ExcelTable-компонент — нужен для вызова evalFormula (вычисление
+// формул через HyperFormula при построении display-значений для журнала).
+const excelTableRef = ref(null);
 
 // Уникальный id для локальной (не сохранённой в БД) строки. Используется
 // AG-Grid'овским getRowId — без стабильного id v35 на любую реактивную правку
@@ -734,6 +737,97 @@ const _normalizeForCompare = (v) => {
     return v;
 };
 
+// Форматирование «было/стало» для диалога причины изменения.
+// Хранилище ячеек держит сырые значения (формулы как строки `=...`, даты как
+// Date/ISO/serial, числа без локали). Юзер же в самой таблице видит уже
+// отрендеренное. Без этого хелпера в диалоге мелькают непонятные `=SUM(...)`
+// или ISO-строки даты, хотя в ячейке всё нормально.
+const _formatValueForDiff = (v) => {
+    if (v === null || v === undefined || v === '') return '';
+
+    // Date instance (например, из exceljs)
+    if (v instanceof Date && !isNaN(v.getTime())) {
+        const dd = String(v.getDate()).padStart(2, '0');
+        const mm = String(v.getMonth() + 1).padStart(2, '0');
+        return `${dd}.${mm}.${v.getFullYear()}`;
+    }
+
+    // Объекты (style и т.п.) — не показываем сырой JSON
+    if (typeof v === 'object') {
+        try { return JSON.stringify(v); } catch (_) { return '[object]'; }
+    }
+
+    if (typeof v === 'string') {
+        // Формулу не вычисляем (для старого значения движок может уже не иметь
+        // того состояния, а юзер всё равно видит, что это формула). Помечаем ƒ.
+        if (v.startsWith('=')) return v;
+
+        // ISO-дата `2026-05-12` или `2026-05-12T...` → DD.MM.YYYY
+        const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/.exec(v);
+        if (isoMatch) {
+            return `${isoMatch[3]}.${isoMatch[2]}.${isoMatch[1]}`;
+        }
+
+        // Числовая строка с разделителем тысяч → красивее с пробелами
+        const t = v.trim();
+        if (/^-?\d+([.,]\d+)?$/.test(t)) {
+            const num = parseFloat(t.replace(',', '.'));
+            if (!isNaN(num)) return num.toLocaleString('ru-RU', { maximumFractionDigits: 10 });
+        }
+
+        return v;
+    }
+
+    if (typeof v === 'number' && isFinite(v)) {
+        return v.toLocaleString('ru-RU', { maximumFractionDigits: 10 });
+    }
+
+    return String(v);
+};
+
+// Конвертирует Excel-serial число (45593 ≈ 28.11.2024) в строку DD.MM.YYYY.
+// Используем готовый excelSerialToDate из xlsxIO — он учитывает фантомный 1900-02-29.
+const _serialToDateString = (n) => {
+    if (typeof n !== 'number' || !isFinite(n)) return null;
+    const d = excelSerialToDate(n);
+    if (!d || isNaN(d.getTime())) return null;
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    return `${dd}.${mm}.${d.getUTCFullYear()}`;
+};
+
+// Вычисляет «человекочитаемый display» для значения ячейки, если его нужно
+// показывать иначе, чем raw. Возвращает строку или null (null = используй raw
+// как есть). Покрытие:
+//   • формула `=...` → результат через HyperFormula
+//   • число со стилем shortDate → DD.MM.YYYY
+//   • числовая строка со стилем shortDate → DD.MM.YYYY
+// Всё остальное (обычные числа, текст, даты-Date-инстансы) форматируется уже
+// в _formatValueForDiff на этапе рендера.
+const _computeDisplayValue = (rowIdx, field, value, style) => {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'string' && value.startsWith('=')) {
+        const r = excelTableRef.value?.evalFormula?.(rowIdx, field);
+        if (r === null || r === undefined) return null;
+        if (typeof r === 'number' && isFinite(r) && style?.numberFormat === 'shortDate') {
+            return _serialToDateString(r);
+        }
+        return typeof r === 'number' ? r.toLocaleString('ru-RU', { maximumFractionDigits: 10 }) : String(r);
+    }
+    if (style?.numberFormat === 'shortDate') {
+        let num = null;
+        if (typeof value === 'number') num = value;
+        else if (typeof value === 'string' && /^-?\d+([.,]\d+)?$/.test(value.trim())) {
+            num = parseFloat(value.trim().replace(',', '.'));
+        }
+        if (num !== null && isFinite(num)) {
+            const s = _serialToDateString(num);
+            if (s) return s;
+        }
+    }
+    return null;
+};
+
 // Считает diff между _serverSnapshot и текущим payload. Возвращает список модификаций
 // (старое значение НЕ пусто и отличается от нового). Чистые добавления исключаются.
 const _detectModifications = (payloadRows) => {
@@ -748,16 +842,47 @@ const _detectModifications = (payloadRows) => {
             if (oldN === newN) return;
             if (oldN === null) return; // пустое → значение = добавление, без комментария
             const colDef = columnDefs.value.find(c => c.field === field);
+            const oldStyle = snap[field + '_style'] || null;
+            const newStyle = (data || {})[field + '_style'] ?? oldStyle;
             mods.push({
                 row: row_index + 1,
                 col_name: colDef?.headerName || field,
                 col: field,
                 oldVal: snap[field],
                 newVal: (data || {})[field],
+                oldDisplay: _computeDisplayValue(row_index, field, snap[field], oldStyle),
+                newDisplay: _computeDisplayValue(row_index, field, (data || {})[field], newStyle),
             });
         });
     });
     return mods;
+};
+
+// Строит {row_index: {field: {old, new}}} display-карту для отправки на бэк.
+// Бэк прицепит эти значения к записям аудит-лога (см. SheetController::updateData).
+// Только cells, где есть формула или shortDate-стиль — нет смысла раздувать
+// payload миллионами пустых строк.
+const _buildDisplayValuesMap = (payloadRows) => {
+    const out = {};
+    payloadRows.forEach(({ row_index, data }) => {
+        const snap = _serverSnapshot[row_index] || {};
+        const fields = new Set([...Object.keys(data || {}), ...Object.keys(snap)]);
+        const perRow = {};
+        fields.forEach(field => {
+            if (field.endsWith('_style')) return;
+            const oldStyle = snap[field + '_style'] || null;
+            const newStyle = (data || {})[field + '_style'] ?? oldStyle;
+            const oldD = _computeDisplayValue(row_index, field, snap[field], oldStyle);
+            const newD = _computeDisplayValue(row_index, field, (data || {})[field], newStyle);
+            if (oldD !== null || newD !== null) {
+                perRow[field] = {};
+                if (oldD !== null) perRow[field].old = oldD;
+                if (newD !== null) perRow[field].new = newD;
+            }
+        });
+        if (Object.keys(perRow).length > 0) out[row_index] = perRow;
+    });
+    return out;
 };
 
 // Обычный flush через Inertia: с preserveState, обновляет props в случае ответа.
@@ -785,6 +910,12 @@ const _flushPendingSync = (commentText = null) => {
     saveStatus.value = 'saving';
     const body = { rows: p.rows };
     if (commentText) body.comment = commentText;
+    // display_values — human-readable строки для аудит-лога: формулы
+    // вычисленные через HyperFormula + Excel-serial-даты со стилем shortDate.
+    // Без них в журнале висят `=A1+B1` и `45593` — бэк не умеет вычислять
+    // формулы и не знает что число со стилем shortDate это дата.
+    const dv = _buildDisplayValuesMap(p.rows);
+    if (Object.keys(dv).length > 0) body.display_values = dv;
     // axios, а не router.post: Inertia partial-reload пересоздавал props, AG Grid
     // ронял внутренний скролл и убивал активный редактор. С axios страница не
     // моргает — пользователь продолжает печатать, debounce сам отправляет.
@@ -819,7 +950,10 @@ const submitCommentDialog = () => {
     commentDialog.pendingPayload = null;
     if (!p) return;
     saveStatus.value = 'saving';
-    axios.post(p.url, { rows: p.rows, comment: text })
+    const dv = _buildDisplayValuesMap(p.rows);
+    const body = { rows: p.rows, comment: text };
+    if (Object.keys(dv).length > 0) body.display_values = dv;
+    axios.post(p.url, body)
         .then(() => {
             refreshServerSnapshot();
             if (_pendingSyncRows.size === 0) {
@@ -2107,7 +2241,9 @@ const handleFileChosen = async (e) => {
                     rowHeights: s.rowHeights || {},
                     hidden: !!s.hidden
                 });
-                created.push(newId);
+                // Храним пару {id, name} вместе, чтобы при частичных фейлах
+                // (упал не последний лист) имена не разъезжались с ID.
+                created.push({ id: newId, name: body.name });
             } else {
                 failed++;
             }
@@ -2125,7 +2261,7 @@ const handleFileChosen = async (e) => {
                 ? `Создано листов: ${created.length}. Ошибок: ${failed}.`
                 : `Создано листов: ${created.length}.`;
             alert(msg);
-            router.visit(route('dashboard', { sheet_id: created[0] }));
+            router.visit(route('dashboard', { sheet_id: created[0].id }));
             return;
         }
 
@@ -2133,14 +2269,14 @@ const handleFileChosen = async (e) => {
         // Если её закрыть/пропустить — просто перейдём на первый импортированный лист.
         try {
             // Подтянем список юзеров через permissions endpoint первого нового листа.
-            const r = await axios.get(route('sheets.permissions', created[0]));
+            const r = await axios.get(route('sheets.permissions', created[0].id));
             bulkPermissions.users = (r.data?.allUsers || []).map(u => ({
                 id: u.id, name: u.name, email: u.email, role: 'none'
             }));
         } catch (_) { bulkPermissions.users = []; }
 
-        bulkPermissions.sheetIds = created;
-        bulkPermissions.sheetNames = wb.sheets.slice(0, created.length).map(s => s.name);
+        bulkPermissions.sheetIds = created.map(c => c.id);
+        bulkPermissions.sheetNames = created.map(c => c.name);
         bulkPermissions.failed = failed;
         bulkPermissions.show = true;
     } catch (err) {
@@ -2479,8 +2615,8 @@ onUnmounted(() => {
                                     <tr v-for="(c, i) in commentDialog.changes" :key="i" class="border-t">
                                         <td class="px-2 py-1 text-gray-600">{{ c.row }}</td>
                                         <td class="px-2 py-1 font-medium">{{ c.col_name }}</td>
-                                        <td class="px-2 py-1 text-red-700 line-through truncate max-w-[160px]" :title="String(c.oldVal ?? '')">{{ c.oldVal ?? '' }}</td>
-                                        <td class="px-2 py-1 text-green-700 truncate max-w-[160px]" :title="String(c.newVal ?? '')">{{ c.newVal ?? '' }}</td>
+                                        <td class="px-2 py-1 text-red-700 line-through truncate max-w-[160px]" :title="c.oldDisplay ?? _formatValueForDiff(c.oldVal)">{{ c.oldDisplay ?? _formatValueForDiff(c.oldVal) }}</td>
+                                        <td class="px-2 py-1 text-green-700 truncate max-w-[160px]" :title="c.newDisplay ?? _formatValueForDiff(c.newVal)">{{ c.newDisplay ?? _formatValueForDiff(c.newVal) }}</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -2528,7 +2664,7 @@ onUnmounted(() => {
                     </button>
                 </div>
                 <div v-if="activeSheet" class="w-full h-full" :style="{ zoom: zoom / 100 }">
-                    <ExcelTable :rowData="tableDataForGrid" :columnDefs="columnDefs"
+                    <ExcelTable ref="excelTableRef" :rowData="tableDataForGrid" :columnDefs="columnDefs"
                         :pinnedTopRowData="pinnedTopRowData" :freezeRow="!!sheetMeta.freezeRow"
                         :merges="sheetMeta.merges" :validations="sheetMeta.validations"
                         :colWidths="sheetMeta.colWidths" :rowHeights="sheetMeta.rowHeights"

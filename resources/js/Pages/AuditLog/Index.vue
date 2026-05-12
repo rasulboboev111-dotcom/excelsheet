@@ -62,10 +62,42 @@ const actionBadgeClass = (key) => {
     return 'bg-blue-100 text-blue-700';
 };
 
-// Превращает значение ячейки (число / строка / null) в человеко-читаемую форму.
+// Превращает значение ячейки (число / строка / null / Date / ISO) в человеко-
+// читаемую форму. Зеркало _formatValueForDiff в Dashboard.vue — журнал должен
+// показывать те же значения, что и диалог «причина изменения».
 const fmtVal = (v) => {
     if (v === null || v === undefined || v === '') return '—';
-    let s = String(v);
+
+    let s;
+    if (v instanceof Date && !isNaN(v.getTime())) {
+        const dd = String(v.getDate()).padStart(2, '0');
+        const mm = String(v.getMonth() + 1).padStart(2, '0');
+        s = `${dd}.${mm}.${v.getFullYear()}`;
+    } else if (typeof v === 'object') {
+        try { s = JSON.stringify(v); } catch (_) { s = '[object]'; }
+    } else if (typeof v === 'string') {
+        if (v.startsWith('=')) {
+            s = v;
+        } else {
+            const iso = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/.exec(v);
+            if (iso) {
+                s = `${iso[3]}.${iso[2]}.${iso[1]}`;
+            } else {
+                const t = v.trim();
+                if (/^-?\d+([.,]\d+)?$/.test(t)) {
+                    const num = parseFloat(t.replace(',', '.'));
+                    s = isNaN(num) ? v : num.toLocaleString('ru-RU', { maximumFractionDigits: 10 });
+                } else {
+                    s = v;
+                }
+            }
+        }
+    } else if (typeof v === 'number' && isFinite(v)) {
+        s = v.toLocaleString('ru-RU', { maximumFractionDigits: 10 });
+    } else {
+        s = String(v);
+    }
+
     if (s.length > 60) s = s.slice(0, 60) + '…';
     return s;
 };
@@ -232,8 +264,8 @@ const paginationLabel = (raw) => {
                                                         <b>{{ c.col_name }}</b>
                                                         <span v-if="c.col_name !== c.col" class="text-gray-400 ml-1">({{ c.col }})</span>
                                                     </td>
-                                                    <td class="px-2 py-1 text-red-700 line-through" :title="c.old">{{ fmtVal(c.old) }}</td>
-                                                    <td class="px-2 py-1 text-green-700 font-medium" :title="c.new">{{ fmtVal(c.new) }}</td>
+                                                    <td class="px-2 py-1 text-red-700 line-through" :title="c.old_display ?? c.old">{{ c.old_display ?? fmtVal(c.old) }}</td>
+                                                    <td class="px-2 py-1 text-green-700 font-medium" :title="c.new_display ?? c.new">{{ c.new_display ?? fmtVal(c.new) }}</td>
                                                 </tr>
                                             </tbody>
                                         </table>

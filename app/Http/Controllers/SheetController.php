@@ -261,6 +261,15 @@ class SheetController extends Controller
             // при удалении строк, чтобы убрать «фантом» последней строки,
             // которая в новом состоянии уже отсутствует.
             'total_rows'        => 'nullable|integer|min:0|max:' . self::MAX_ROW_INDEX,
+            // display_values — human-readable hints для журнала аудита.
+            // Структура: { "<row_index>": { "<field>": { old?: "12.05.2026", new?: "42" } } }.
+            // Бэк формулы вычислять не умеет (нет HF в PHP), фронт делает это перед
+            // отправкой и шлёт результат, чтобы в журнале не висело `=A1+B1`.
+            'display_values'                => 'nullable|array',
+            'display_values.*'              => 'array',
+            'display_values.*.*'            => 'array',
+            'display_values.*.*.old'        => 'nullable|string|max:1000',
+            'display_values.*.*.new'        => 'nullable|string|max:1000',
         ]);
 
         // Карта field → headerName (имя колонки, которое видит пользователь)
@@ -337,13 +346,21 @@ class SheetController extends Controller
                 // данных), а не чистое добавление. Триггерит требование комментария.
                 if ($normOld !== null) $modificationCount++;
                 if (count($changes) < $sampleLimit) {
-                    $changes[] = [
+                    $entry = [
                         'row'      => $rowIndex + 1, // человеко-читаемая нумерация с 1
                         'col'      => $field,
                         'col_name' => $columnsMap[$field] ?? $field,
                         'old'      => $oldVal,
                         'new'      => $newVal,
                     ];
+                    // Display-подсказки от фронта (вычисленные формулы, серийные даты).
+                    // Журнал в UI отдаст приоритет old_display/new_display перед raw old/new.
+                    $dv = $payload['display_values'][$rowIndex][$field] ?? null;
+                    if (is_array($dv)) {
+                        if (isset($dv['old']) && $dv['old'] !== '') $entry['old_display'] = $dv['old'];
+                        if (isset($dv['new']) && $dv['new'] !== '') $entry['new_display'] = $dv['new'];
+                    }
+                    $changes[] = $entry;
                 }
             }
 
