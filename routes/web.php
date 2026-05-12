@@ -64,9 +64,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Импорт xlsx — любой залогиненный юзер. Импортёр становится owner новых листов
     // и может их редактировать. Видимость для других юзеров остаётся за админом.
-    // Throttle помягче (10/мин) — импорт тяжёлый.
+    // Throttle 120/min: фронт шлёт ОДИН POST на каждый лист в xlsx (атомарность
+    // тут не нужна — лист либо создался, либо нет, тогда фронт повторяет). При
+    // 12+ листах в файле старый лимит 10/min ронял импорт с 429 на 11-м листе.
+    // Размер payload'а защищён через MAX_IMPORT_BODY_BYTES (50 МБ) и
+    // MAX_IMPORT_TOTAL_CELLS (1M ячеек) — DoS-сценарии перекрыты другими механизмами.
     Route::post('/sheets/import-sheet', [SheetController::class, 'importSheet'])
-        ->middleware('throttle:10,1')
+        ->middleware('throttle:120,1')
         ->name('sheets.importSheet');
 });
 

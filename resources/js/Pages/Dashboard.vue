@@ -2068,29 +2068,47 @@ const handleFileChosen = async (e) => {
         const created = [];
         let failed = 0;
 
+        // Импорт идёт по одному POST на лист. Серверный throttle = 120/min
+        // (см. routes/web.php). Для xlsx со 100+ листами при загруженной той же
+        // минуте кратко выстреливает 429 — Laravel шлёт Retry-After в заголовке,
+        // ждём ровно столько и пробуем повторно, до 3 попыток.
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
         for (let i = 0; i < wb.sheets.length; i++) {
             const s = wb.sheets[i];
-            try {
-                const resp = await axios.post(route('sheets.importSheet'), {
-                    name: s.name || `Лист ${i + 1}`,
-                    columns: s.columnDefs || [],
-                    rows: (s.rowData || []).map((r, j) => ({ row_index: j, data: r }))
-                });
-                const newId = resp?.data?.id;
-                if (newId) {
-                    setMetaFor(newId, {
-                        merges: s.merges || [],
-                        validations: s.validations || {},
-                        colWidths: s.colWidths || {},
-                        rowHeights: s.rowHeights || {},
-                        hidden: !!s.hidden
-                    });
-                    created.push(newId);
-                } else {
-                    failed++;
+            const body = {
+                name: s.name || `Лист ${i + 1}`,
+                columns: s.columnDefs || [],
+                rows: (s.rowData || []).map((r, j) => ({ row_index: j, data: r }))
+            };
+            let newId = null;
+            for (let attempt = 0; attempt < 3 && newId == null; attempt++) {
+                try {
+                    const resp = await axios.post(route('sheets.importSheet'), body);
+                    newId = resp?.data?.id ?? null;
+                } catch (err) {
+                    const status = err?.response?.status;
+                    if (status === 429 && attempt < 2) {
+                        const retryAfter = parseInt(err.response.headers?.['retry-after'] || '5', 10);
+                        const waitMs = Math.min(60_000, Math.max(1000, retryAfter * 1000));
+                        console.warn(`429 на импорте "${s.name}", жду ${waitMs} мс и повторяю...`);
+                        await sleep(waitMs);
+                        continue;
+                    }
+                    console.error(`Ошибка импорта листа "${s.name}":`, err);
+                    break;
                 }
-            } catch (err) {
-                console.error(`Ошибка импорта листа "${s.name}":`, err);
+            }
+            if (newId) {
+                setMetaFor(newId, {
+                    merges: s.merges || [],
+                    validations: s.validations || {},
+                    colWidths: s.colWidths || {},
+                    rowHeights: s.rowHeights || {},
+                    hidden: !!s.hidden
+                });
+                created.push(newId);
+            } else {
                 failed++;
             }
         }
