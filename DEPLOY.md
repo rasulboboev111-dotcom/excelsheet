@@ -507,21 +507,28 @@ docker compose exec app php artisan up
 Запускай раз в месяц, чтобы убедиться что бэкапы реально восстанавливаются:
 
 ```bash
-# Поднять одноразовый postgres
+# Поднять одноразовый postgres с теми же creds, что в проде (чтобы юзер
+# excel_user, под которым сделан pg_dump, мог восстановиться без правок).
+# Имя БД и логин/пароль — тестовые, никак не пересекаются с проdом.
 docker run -d --name backup-test \
+  -e POSTGRES_USER=excel_user \
   -e POSTGRES_PASSWORD=test123 \
-  -e POSTGRES_USER=postgres \
   -e POSTGRES_DB=excel_db \
   postgres:16-alpine
 
-sleep 10  # ждём пока postgres стартанёт
+# Ждём, пока postgres реально начнёт принимать коннекты (init нового
+# tablespace на медленном диске может занять 15+ сек, поэтому sleep 10
+# ненадёжен).
+until docker exec backup-test pg_isready -U excel_user -d excel_db >/dev/null 2>&1; do
+  sleep 1
+done
 
 # Восстановить
 gunzip -c /opt/excel/backups/excel_2026-05-13_0300.sql.gz | \
-  docker exec -i backup-test psql -U postgres -d excel_db
+  docker exec -i backup-test psql -U excel_user -d excel_db
 
 # Проверить
-docker exec backup-test psql -U postgres -d excel_db -c \
+docker exec backup-test psql -U excel_user -d excel_db -c \
   "SELECT COUNT(*) FROM sheets; SELECT COUNT(*) FROM sheet_data;"
 
 # Снести

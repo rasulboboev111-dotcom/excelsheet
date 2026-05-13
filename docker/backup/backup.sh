@@ -2,7 +2,12 @@
 # Ежедневный backup PostgreSQL → /backups (named volume) + опционально rclone в S3-совместимое хранилище.
 # Запускается из cron внутри backup-контейнера.
 
+# pipefail ОБЯЗАТЕЛЬНО: без него `pg_dump | gzip > file` маскирует падение
+# pg_dump (exit code пайпа = exit code gzip, который пишет валидный пустой
+# gzip и возвращает 0). Результат: молча создаётся «бэкап» из 0 байт данных.
+# Alpine ash (busybox 1.30+) поддерживает pipefail.
 set -eu
+set -o pipefail
 
 TIMESTAMP=$(date +%F_%H%M)
 BACKUP_DIR="/backups"

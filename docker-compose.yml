@@ -170,6 +170,10 @@ services:
   scheduler:
     image: excel-app:latest
     restart: unless-stopped
+    # Дефолтные 10s SIGTERM-grace может оборвать `schedule:run` посередине
+    # (например cleanup audit-log пишет в БД). 30s — небольшой запас на
+    # завершение типичной cron-задачи.
+    stop_grace_period: 30s
     env_file: .env
     environment:
       DB_HOST: postgres
