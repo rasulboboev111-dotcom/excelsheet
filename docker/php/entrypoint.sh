@@ -99,7 +99,18 @@ if [ "${TABLES_EXIST:-0}" -gt 0 ] && [ "${PENDING_COUNT:-0}" -gt 0 ]; then
             log "FATAL: Разберись с pg_dump, удали неполный дамп ${DUMP}, перезапусти контейнер."
             exit 1
         fi
-        log "Pre-migration backup OK (${DUMP_SIZE} bytes)"
+        # Проверка целостности gzip: truncated дамп проходит size-чек, но
+        # `gunzip -t` ловит обрыв в конце. Без этой проверки можно хранить
+        # «бэкап», который нельзя восстановить (катастрофа при rollback).
+        if ! gzip -t "$DUMP" 2>/dev/null; then
+            log "FATAL: pre-migration dump gzip-integrity check FAILED — ${DUMP} битый."
+            log "FATAL: stderr pg_dump'а:"
+            cat "$DUMP_ERR_LOG" >&2 || true
+            log "FATAL: ОТКАЗЫВАЕМСЯ запускать миграцию без валидного бэкапа."
+            rm -f "$DUMP"
+            exit 1
+        fi
+        log "Pre-migration backup OK (${DUMP_SIZE} bytes, gzip valid)"
         rm -f "$DUMP_ERR_LOG"
         # Чистим pre-migration снимки старше 14 дней.
         find "$BACKUP_DIR" -name 'pre-migrate_*.sql.gz' -mtime +14 -delete 2>/dev/null || true

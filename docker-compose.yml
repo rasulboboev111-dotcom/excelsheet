@@ -130,6 +130,11 @@ services:
     image: excel-app:latest
     restart: unless-stopped
     env_file: .env
+    # При `docker compose down` / restart Docker шлёт SIGTERM воркеру.
+    # Без stop_grace_period дефолт = 10s — Laravel-воркер не успевает завершить
+    # текущую job (email через Gmail может идти 30-90s). Ставим 150s — чуть
+    # больше чем --timeout=120s ниже, плюс запас на graceful flush.
+    stop_grace_period: 150s
     environment:
       DB_HOST: postgres
       DB_PORT: 5432

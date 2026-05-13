@@ -23,6 +23,16 @@ PGPASSWORD="$DB_PASSWORD" pg_dump \
 SIZE=$(stat -c %s "$FILE" 2>/dev/null || stat -f %z "$FILE")
 echo "[backup] dump done: $(($SIZE / 1024)) KB"
 
+# Целостность gzip — гарантия что pg_dump не оборвался посередине
+# (truncated gzip имеет валидный header, но `gunzip -t` ловит обрыв
+# в конце). Без этой проверки можно годами хранить «бэкап», который
+# нельзя восстановить.
+if ! gzip -t "$FILE" 2>/dev/null; then
+    echo "[backup] FATAL: gzip integrity check failed for $FILE — удаляю битый дамп" >&2
+    rm -f "$FILE"
+    exit 1
+fi
+
 # Off-site через rclone — если настроена. Сегмент BACKUP_RCLONE_REMOTE
 # должен иметь вид `s3-remote:bucket/path` (имя remote'а из rclone config).
 # Если переменная пустая — пропускаем, держим только локальный бэкап.
