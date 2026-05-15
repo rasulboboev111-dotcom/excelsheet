@@ -109,6 +109,80 @@ const _layoutInitialData = (rows) => {
 const tableData = ref(_layoutInitialData(deepClone(props.initialData)));
 const currentSelection = ref(null);
 
+// === Резолверы абсолютного индекса при активной сортировке / фильтре AG Grid ===
+// AG Grid после клика на шапку колонки сортирует строки визуально, но tableData
+// остаётся в исходном порядке. node.rowIndex (и selection.start/end.row) после
+// сортировки = display-index, а не индекс в tableData → прямой slice по нему
+// затронет не те строки. Резолверы маппят rowData (которая ВСЕГДА несёт стабильный
+// id или _client_id) → реальный индекс в tableData. Используется во всех
+// range-операциях: fill, clear, copy/cut/paste, autosum, applyCellsFormat.
+const _resolveCanonicalRow = (rowDataLike) => {
+    if (!rowDataLike) return null;
+    if (rowDataLike.id != null) {
+        const r = tableData.value.find(r => r && r.id === rowDataLike.id);
+        if (r) return r;
+    }
+    if (rowDataLike._client_id) {
+        const r = tableData.value.find(r => r && r._client_id === rowDataLike._client_id);
+        if (r) return r;
+    }
+    // Same reference fallback (если AG Grid отдал нашу же ссылку).
+    if (tableData.value.includes(rowDataLike)) return rowDataLike;
+    return null;
+};
+
+// Возвращает [canonical-rows] в порядке отображения для текущего currentSelection.
+// При активной сортировке/фильтре — берёт строки через AG Grid getDisplayedRowAtIndex,
+// каждую резолвит до канонической ссылки. Без AG Grid API — фоллбек на tableData slice.
+const _getCanonicalRowsInSelection = () => {
+    const sel = currentSelection.value;
+    if (!sel?.start || !sel?.end) return [];
+    const startRow = Math.min(sel.start.row, sel.end.row);
+    const endRow   = Math.max(sel.start.row, sel.end.row);
+    const api = tableApi.value;
+    if (!api?.getDisplayedRowAtIndex) {
+        const out = [];
+        for (let r = startRow; r <= endRow; r++) {
+            const row = tableData.value[r];
+            if (row) out.push(row);
+        }
+        return out;
+    }
+    const freezeOff = sheetMeta.value?.freezeRow ? 1 : 0;
+    const out = [];
+    for (let absR = startRow; absR <= endRow; absR++) {
+        const displayIdx = absR - freezeOff;
+        if (displayIdx < 0) {
+            // Закреплённая верхняя строка (freezeRow=true, absR=0) — она в pinned-top,
+            // а не в body. Без этой ветки слайс выделения, начинающегося с пиннеда,
+            // молча терял первую строку (fill/clear не применялись).
+            if (freezeOff && absR === 0 && tableData.value.length > 0) {
+                const pinnedNode = api.getPinnedTopRow?.(0);
+                const canonical = pinnedNode?.data
+                    ? _resolveCanonicalRow(pinnedNode.data)
+                    : tableData.value[0];
+                if (canonical && !out.includes(canonical)) out.push(canonical);
+            }
+            continue;
+        }
+        const node = api.getDisplayedRowAtIndex(displayIdx);
+        const canonical = node?.data ? _resolveCanonicalRow(node.data) : null;
+        if (canonical && !out.includes(canonical)) out.push(canonical);
+    }
+    return out;
+};
+
+// Преобразует rowData/index из selection или activeCell в абсолютный индекс
+// в tableData (для прямого доступа к строке). -1 если не найдено.
+const _resolveAbsRow = (rowDataLike, fallbackIdx = -1) => {
+    const canonical = _resolveCanonicalRow(rowDataLike);
+    if (canonical) {
+        const i = tableData.value.indexOf(canonical);
+        if (i >= 0) return i;
+    }
+    return fallbackIdx;
+};
+
 // Предохранитель для Undo/Redo
 const isUndoing = ref(false);
 
@@ -249,12 +323,14 @@ const submitSendEmail = async () => {
 const applyFill = (dir) => {
     if (!currentSelection.value) return;
     const { start, end } = currentSelection.value;
-    const r1 = Math.min(start.row, end.row);
-    const r2 = Math.max(start.row, end.row);
     const c1 = Math.min(start.col, end.col);
     const c2 = Math.max(start.col, end.col);
     const cols = columnDefs.value.slice(c1, c2 + 1).map(c => c.field);
-    const rowsArr = tableData.value.slice(r1, r2 + 1);
+    // КРИТИЧНО: берём строки через AG Grid getDisplayedRowAtIndex (с учётом
+    // сортировки/фильтра), а не slice по display-index из tableData. Иначе
+    // после клика на шапку колонки fill применяется к не тем строкам.
+    const rowsArr = _getCanonicalRowsInSelection();
+    if (rowsArr.length === 0) return;
     const undoChanges = [];
 
     const fillCol = (ci) => {
@@ -295,12 +371,12 @@ const applyFill = (dir) => {
 const applyClear = (what) => {
     if (!currentSelection.value) return;
     const { start, end } = currentSelection.value;
-    const r1 = Math.min(start.row, end.row);
-    const r2 = Math.max(start.row, end.row);
     const c1 = Math.min(start.col, end.col);
     const c2 = Math.max(start.col, end.col);
     const cols = columnDefs.value.slice(c1, c2 + 1).map(c => c.field);
-    const rowsArr = tableData.value.slice(r1, r2 + 1);
+    // КРИТИЧНО: см. комментарий в applyFill — display-index после сортировки ≠ индекс в tableData.
+    const rowsArr = _getCanonicalRowsInSelection();
+    if (rowsArr.length === 0) return;
     const undoChanges = [];
     rowsArr.forEach(row => cols.forEach(f => {
         undoChanges.push({ dataRef: row, field: f, oldValue: row[f], oldStyle: row[f + '_style'] ? deepClone(row[f + '_style']) : null });
@@ -578,6 +654,11 @@ const handleGrowCols = () => {
 };
 
 // --- UNDO / REDO SYSTEM ---
+// Поддерживает три типа записей в undoStack/redoStack:
+//   1) [{ dataRef, field, oldValue, oldStyle }, ...] — изменение значений/стилей ячеек.
+//   2) { kind: 'row_insert', rowIndex, row }      — вставка строки. Reverse = удалить эту строку.
+//   3) { kind: 'row_delete', rowIndex, row }      — удаление строки. Reverse = вставить обратно.
+// Записи (2) и (3) хранятся ВНЕ массива — это распознаётся через `kind`.
 const undoStack = ref([]);
 const redoStack = ref([]);
 const maxStackSize = 50;
@@ -588,15 +669,83 @@ const saveUndoState = (changes) => {
     if (undoStack.value.length > maxStackSize) undoStack.value.shift();
 };
 
+// Отправка ВСЕЙ таблицы на сервер (нужно после вставки/удаления строки,
+// чтобы хвостовые индексы корректно сдвинулись и не было «фантома»).
+const _sendFullTableUpdate = (commentText) => {
+    if (!props.activeSheet?.id) return Promise.resolve();
+    const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
+    _pendingSyncRows.clear();
+    if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
+    saveStatus.value = 'saving';
+    return axios.post(route('sheets.updateData', props.activeSheet.id), {
+        rows: allRows,
+        comment: commentText,
+        total_rows: tableData.value.length,
+    }).then(() => {
+        refreshServerSnapshot();
+        if (_pendingSyncRows.size === 0) {
+            saveStatus.value = 'saved';
+            lastSavedAt.value = new Date();
+            lastSaveError.value = '';
+        }
+    }).catch((e) => {
+        saveStatus.value = 'error';
+        lastSaveError.value = e?.response?.data?.message || 'Сетевая ошибка';
+    });
+};
+
+// Применяет одну row-level операцию (вставку/удаление). Используется и из
+// прямого insertRow/deleteRow, и из undo/redo. Возвращает inverse-операцию
+// для записи в обратный стек.
+const _applyRowOp = (op) => {
+    if (op.kind === 'row_delete') {
+        // Удалить строку, вернуть row_insert для отмены.
+        const idx = tableData.value.indexOf(op.row);
+        if (idx < 0) {
+            // Строка уже исчезла из таблицы — фолбек на rowIndex.
+            if (op.rowIndex >= 0 && op.rowIndex < tableData.value.length) {
+                const row = tableData.value[op.rowIndex];
+                tableData.value.splice(op.rowIndex, 1);
+                shiftMetaRowsOnDelete(op.rowIndex);
+                return { kind: 'row_insert', rowIndex: op.rowIndex, row };
+            }
+            return null;
+        }
+        const row = op.row;
+        tableData.value.splice(idx, 1);
+        shiftMetaRowsOnDelete(idx);
+        return { kind: 'row_insert', rowIndex: idx, row };
+    }
+    if (op.kind === 'row_insert') {
+        // Вставить строку обратно, вернуть row_delete для отмены.
+        const at = Math.max(0, Math.min(op.rowIndex, tableData.value.length));
+        tableData.value.splice(at, 0, op.row);
+        shiftMetaRowsOnInsert(at);
+        return { kind: 'row_delete', rowIndex: at, row: op.row };
+    }
+    return null;
+};
+
 const undo = async () => {
     if (undoStack.value.length === 0 || isUndoing.value) return;
 
     isUndoing.value = true;
-    const changes = undoStack.value.pop();
-    const redoChanges = [];
-    const affectedRowRefs = new Set();
+    const entry = undoStack.value.pop();
 
     try {
+        // Row-level операция (вставка/удаление).
+        if (entry && !Array.isArray(entry) && entry.kind) {
+            const inverse = _applyRowOp(entry);
+            if (inverse) redoStack.value.push(inverse);
+            tableApi.value?.refreshCells({ force: true });
+            await _sendFullTableUpdate('Отмена операции со строкой');
+            return;
+        }
+
+        // Cell-level: массив изменений значений/стилей.
+        const changes = entry;
+        const redoChanges = [];
+        const affectedRowRefs = new Set();
         changes.forEach(change => {
             const { dataRef, field, oldValue, oldStyle } = change;
             redoChanges.push({
@@ -612,6 +761,10 @@ const undo = async () => {
         });
         redoStack.value.push(redoChanges);
         syncChangesToServer(Array.from(affectedRowRefs));
+        // КРИТИЧНО: AG Grid не пересматривает cellStyle при изменении вложенных
+        // полей строки (например row[field+'_style']) — поэтому стили после undo
+        // визуально не возвращались. force:true заставляет перерисовать.
+        tableApi.value?.refreshCells({ force: true });
     } finally {
         // Снимаем флаг после Vue-флаша/тика — это ловит синхронные ag-grid колбэки,
         // но не блокирует следующий Ctrl+Z дольше необходимого.
@@ -624,11 +777,20 @@ const redo = async () => {
     if (redoStack.value.length === 0 || isUndoing.value) return;
 
     isUndoing.value = true;
-    const changes = redoStack.value.pop();
-    const undoChanges = [];
-    const affectedRowRefs = new Set();
+    const entry = redoStack.value.pop();
 
     try {
+        if (entry && !Array.isArray(entry) && entry.kind) {
+            const inverse = _applyRowOp(entry);
+            if (inverse) undoStack.value.push(inverse);
+            tableApi.value?.refreshCells({ force: true });
+            await _sendFullTableUpdate('Повтор операции со строкой');
+            return;
+        }
+
+        const changes = entry;
+        const undoChanges = [];
+        const affectedRowRefs = new Set();
         changes.forEach(change => {
             const { dataRef, field, oldValue, oldStyle } = change;
             undoChanges.push({
@@ -644,6 +806,7 @@ const redo = async () => {
         });
         undoStack.value.push(undoChanges);
         syncChangesToServer(Array.from(affectedRowRefs));
+        tableApi.value?.refreshCells({ force: true });
     } finally {
         await nextTick();
         isUndoing.value = false;
@@ -1337,22 +1500,40 @@ const handleRibbonAction = ({ type, value }) => {
 
     // === Автосумма — пишет формулу в текущую ячейку (нужна активная ячейка) ===
     if (type === 'autosum' || type.startsWith('autosum-')) {
-        const { rowIndex, colId } = activeCellInfo.value;
-        if (rowIndex == null || rowIndex < 1 || !colId) {
+        const { rowIndex: dispRow, colId, rowData: actRowData } = activeCellInfo.value;
+        if (dispRow == null || dispRow < 1 || !colId) {
+            alert('Поставьте курсор в ячейку ниже значений, по которым нужно посчитать.');
+            return;
+        }
+        // Резолвим активную строку до канонической в tableData — после сортировки
+        // display-index не равен индексу в tableData, формула ссылалась бы на
+        // другие позиции.
+        const row = _resolveCanonicalRow(actRowData) || tableData.value[dispRow];
+        if (!row) return;
+        const absRow = tableData.value.indexOf(row);
+        if (absRow < 1) {
             alert('Поставьте курсор в ячейку ниже значений, по которым нужно посчитать.');
             return;
         }
         const fn = type === 'autosum' ? 'SUM' : type.split('-')[1].toUpperCase();
-        const row = tableData.value[rowIndex];
-        if (!row) return;
         saveUndoState([{ dataRef: row, field: colId, oldValue: row[colId], oldStyle: null }]);
-        row[colId] = `=${fn}(${colId}1:${colId}${rowIndex})`;
+        row[colId] = `=${fn}(${colId}1:${colId}${absRow})`;
         syncChangesToServer([row]);
         return;
     }
 
     let { rowIndex: activeRow, colId: activeCol, rowData: activeRowData } = activeCellInfo.value;
-    if (!activeRowData && activeRow !== null) activeRowData = tableData.value[activeRow];
+    // КРИТИЧНО: при активной сортировке activeCellInfo.rowData — это копия из AG Grid,
+    // не === tableData[activeRow]. Резолвим до канонической ссылки.
+    const canonicalActive = _resolveCanonicalRow(activeRowData);
+    if (canonicalActive) {
+        activeRowData = canonicalActive;
+        // activeRow тоже обновим до канонического — нужно для paste-логики ниже.
+        const i = tableData.value.indexOf(canonicalActive);
+        if (i >= 0) activeRow = i;
+    } else if (!activeRowData && activeRow !== null) {
+        activeRowData = tableData.value[activeRow];
+    }
     if (!activeRowData || activeCol === null) return;
 
     let targetRowsData = [activeRowData];
@@ -1360,15 +1541,12 @@ const handleRibbonAction = ({ type, value }) => {
 
     if (currentSelection.value) {
         const { start, end } = currentSelection.value;
-        const startRow = Math.min(start.row, end.row);
-        const endRow = Math.max(start.row, end.row);
         const startCol = Math.min(start.col, end.col);
         const endCol = Math.max(start.col, end.col);
-        targetRowsData = [];
-        for (let r = startRow; r <= endRow; r++) {
-            const row = tableData.value[r];
-            if (row) targetRowsData.push(row);
-        }
+        // КРИТИЧНО: при активной сортировке колонки display-index из start.row/end.row
+        // не равен индексу в tableData → берём строки через AG Grid getDisplayedRowAtIndex.
+        targetRowsData = _getCanonicalRowsInSelection();
+        if (targetRowsData.length === 0) targetRowsData = [activeRowData];
         cols = [];
         const allCols = columnDefs.value;
         for (let c = startCol; c <= endCol; c++) { if (allCols[c]) cols.push(allCols[c].field); }
@@ -1445,6 +1623,11 @@ const handleRibbonAction = ({ type, value }) => {
         tableData.value.splice(at, 0, newRow);
         // Сдвиг merges и rowHeights, чтобы они не "уехали" относительно данных.
         shiftMetaRowsOnInsert(at);
+        // Записываем row-level операцию в undo-стек: отмена = удалить эту строку.
+        // Если это не вызов из самого undo (isUndoing), иначе не дублируем.
+        if (!isUndoing.value) {
+            saveUndoState({ kind: 'row_delete', rowIndex: at, row: newRow });
+        }
         // Шлём всю таблицу через updateData — это исключает гонку с буфером
         // правок ячеек: если бы делали отдельный insertRow + параллельный
         // pending updateData, индексы могли разъехаться. Системный комментарий
@@ -1491,6 +1674,10 @@ const handleRibbonAction = ({ type, value }) => {
         const removedAt = activeRow;
         tableData.value.splice(activeRow, 1);
         shiftMetaRowsOnDelete(activeRow);
+        // Записываем row-level операцию в undo-стек: отмена = вставить обратно.
+        if (!isUndoing.value) {
+            saveUndoState({ kind: 'row_insert', rowIndex: removedAt, row: removedRow });
+        }
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
         _pendingSyncRows.clear();
         if (_pendingSyncTimer) { clearTimeout(_pendingSyncTimer); _pendingSyncTimer = null; }
@@ -1625,13 +1812,19 @@ const handleRibbonAction = ({ type, value }) => {
                 case 'fontSizeInc': style.fontSize = (getNumericSize(style.fontSize) + 1) + 'px'; break;
                 case 'fontSizeDec': style.fontSize = Math.max(8, getNumericSize(style.fontSize) - 1) + 'px'; break;
                 case 'mergeCenter':
-                    style.textAlign = 'center'; style.verticalAlign = 'middle';
-                    // Если ячеек > 1 — делаем настоящий merge выделения
+                    // При множественном выделении после merge остаётся видна
+                    // только верхне-левая ячейка. Стили остальных ячеек просто
+                    // утратились бы → применяем только к (0,0). Для одиночной
+                    // ячейки стиль применяем без merge.
                     if (rowsLen > 1 || colsLen > 1) {
                         if (ri === 0 && ci === 0) {
-                            // Запускаем merge только один раз (для top-left)
+                            style.textAlign = 'center';
+                            style.verticalAlign = 'middle';
                             handleMergeCells();
                         }
+                    } else {
+                        style.textAlign = 'center';
+                        style.verticalAlign = 'middle';
                     }
                     break;
                 case 'clear': row[cId] = ''; break;
@@ -1647,40 +1840,31 @@ const handleRangeClear = ({ targetRows, colFields }) => {
     if (!props.canEdit) return;
 
     // AG-Grid v32+ передаёт в targetRows СВОИ копии строк (node.data !== tableData[i]).
-    // Если мутировать копию — _buildSyncPayload потом возьмёт строку из tableData
-    // (где правка НЕ применилась) и пошлёт серверу старое значение. После F5 ячейка
-    // «возвращается». Поэтому игнорируем targetRows и работаем напрямую с tableData
-    // через индексы из currentSelection — это гарантирует, что мутация и upsert
-    // идут по одной и той же строке.
-    let r1, r2;
+    // Резолвим до канонической ссылки в tableData через id/_client_id.
+    // КРИТИЧНО: при активной сортировке колонки display-index из currentSelection
+    // не равен индексу в tableData, поэтому строки получаем через AG Grid
+    // getDisplayedRowAtIndex (см. _getCanonicalRowsInSelection).
+    let canonicalRows = [];
     if (currentSelection.value) {
-        const { start, end } = currentSelection.value;
-        r1 = Math.min(start.row, end.row);
-        r2 = Math.max(start.row, end.row);
+        canonicalRows = _getCanonicalRowsInSelection();
     } else {
-        // Fallback: резолвим по id из targetRows, если выделения нет (например,
-        // при точечном clear через контекстное меню одной ячейки).
-        const indices = targetRows
-            .map(row => tableData.value.findIndex(r => r && row?.id != null && r.id === row.id))
-            .filter(i => i >= 0);
-        if (indices.length === 0) return;
-        r1 = Math.min(...indices);
-        r2 = Math.max(...indices);
+        // Fallback: резолвим targetRows по id, если выделения нет (например,
+        // точечный clear через контекстное меню одной ячейки).
+        targetRows.forEach(row => {
+            const c = _resolveCanonicalRow(row);
+            if (c && !canonicalRows.includes(c)) canonicalRows.push(c);
+        });
     }
 
-    const canonicalRows = [];
     const undoChanges = [];
-    for (let r = r1; r <= r2; r++) {
-        const row = tableData.value[r];
-        if (!row) continue;
-        canonicalRows.push(row);
+    canonicalRows.forEach(row => {
         colFields.forEach(field => {
             undoChanges.push({
                 dataRef: row, field, oldValue: row[field],
                 oldStyle: row[field + '_style'] ? deepClone(row[field + '_style']) : null
             });
         });
-    }
+    });
     if (canonicalRows.length === 0) return;
 
     saveUndoState(undoChanges);

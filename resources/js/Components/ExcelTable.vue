@@ -251,8 +251,16 @@ const updateHFData = () => {
     hf.setSheetContent(sheetId, hfData);
 };
 
-// Throttled обновление HF: при паст/филл/автосумм мутируется тот же массив (длина та же),
-// просто [length] не сработает. Делаем глубокий watch по ссылкам данных.
+// Throttled обновление HF: при paste/fill/автосумме мутируется тот же массив
+// (длина та же), просто [length] не сработает. Делаем глубокий watch по ссылкам
+// данных. onCellValueChanged делает incremental update одной ячейки и эту работу
+// дублирует scheduleHFUpdate'ом полным rebuild'ом. ЭТО ОК — rebuild идемпотентен,
+// просто стоит CPU. Throttle 250мс снижает частоту до приемлемой.
+//
+// ВАЖНО: skip-логику «пропустить rebuild если был недавний incremental» УБРАЛИ:
+// она была unsafe, потому что paste/fill НЕ фирят incremental (только deep-watch),
+// и если в окне 200мс случался отдельный user-typing, паст-данные могли НЕ попасть
+// в HF → формулы показывали стале значения.
 let _hfThrottleTimer = null;
 const scheduleHFUpdate = () => {
     if (_hfThrottleTimer) return;
@@ -260,7 +268,20 @@ const scheduleHFUpdate = () => {
         _hfThrottleTimer = null;
         updateHFData();
         gridApi.value?.refreshCells({ force: true });
-    }, 50);
+    }, 250);
+};
+
+// Флаг-throttle для refreshCells: при быстрой печати десятки onCellValueChanged
+// планировали setTimeout 0 — каждый из них дёргал refreshCells. Теперь — один
+// раз на тик.
+let _refreshScheduled = false;
+const scheduleRefresh = () => {
+    if (_refreshScheduled) return;
+    _refreshScheduled = true;
+    setTimeout(() => {
+        _refreshScheduled = false;
+        gridApi.value?.refreshCells();
+    }, 0);
 };
 watch(() => props.rowData, scheduleHFUpdate, { deep: true });
 watch(() => props.columnDefs?.length, scheduleHFUpdate);
@@ -412,7 +433,7 @@ const onCellValueChanged = (event) => {
         }
     } catch (_) { /* падать не должны — пусть deep-watcher подхватит */ }
 
-    setTimeout(() => gridApi.value?.refreshCells(), 0);
+    scheduleRefresh();
     const absR = toAbsRow(event.node?.rowIndex, event.node?.rowPinned);
     emit('cell-value-changed', {
         data: event.data,
