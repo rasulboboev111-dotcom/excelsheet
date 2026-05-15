@@ -694,6 +694,33 @@ const _sendFullTableUpdate = (commentText) => {
     });
 };
 
+// Хелпер: точечный refreshCells по списку row-ссылок. На больших листах
+// (10К+ строк) force:true на ВСЁ заставляет AG Grid пересмотреть cellStyle
+// для всех видимых ячеек — заметная пауза. Точечный refresh — только
+// затронутые строки. Если node не найден (свежая строка ещё не в API) —
+// откатываемся на global refresh.
+const _refreshRowNodes = (rowRefs) => {
+    const api = tableApi.value;
+    if (!api?.refreshCells) return;
+    if (!rowRefs || rowRefs.length === 0) {
+        api.refreshCells({ force: true });
+        return;
+    }
+    const nodes = [];
+    rowRefs.forEach(row => {
+        if (!row) return;
+        const rid = row.id != null ? 'id_' + row.id : row._client_id;
+        if (!rid) return;
+        const node = api.getRowNode?.(rid);
+        if (node) nodes.push(node);
+    });
+    if (nodes.length > 0) {
+        api.refreshCells({ rowNodes: nodes, force: true });
+    } else {
+        api.refreshCells({ force: true });
+    }
+};
+
 // Применяет одну row-level операцию (вставку/удаление). Используется и из
 // прямого insertRow/deleteRow, и из undo/redo. Возвращает inverse-операцию
 // для записи в обратный стек.
@@ -735,6 +762,28 @@ const undo = async () => {
     try {
         // Row-level операция (вставка/удаление).
         if (entry && !Array.isArray(entry) && entry.kind) {
+            // Если есть pending-правки ячеек — флушим их отдельно с их собственным
+            // комментарием, чтобы в audit-log не уходила подпись «Отмена операции
+            // со строкой» для несвязанных правок. Для не-админа с модификациями —
+            // возвращаем entry в стек и показываем стандартный диалог причины;
+            // юзер заполнит причину и повторит Ctrl+Z.
+            if (_pendingSyncRows.size > 0) {
+                if (!props.isAdmin && _hasPendingNonAdminMods()) {
+                    undoStack.value.push(entry);
+                    isUndoing.value = false;
+                    _flushPendingSync();
+                    return;
+                }
+                // Admin или только добавления — синхронно дослыем pending как обычно.
+                const p = _buildSyncPayload();
+                if (p) {
+                    const dv = _buildDisplayValuesMap(p.rows);
+                    const body = { rows: p.rows, comment: 'Изменение ячеек' };
+                    if (Object.keys(dv).length > 0) body.display_values = dv;
+                    try { await axios.post(p.url, body); } catch (_) { /* лог saveStatus уже выставится при следующем flush */ }
+                }
+            }
+
             const inverse = _applyRowOp(entry);
             if (inverse) redoStack.value.push(inverse);
             tableApi.value?.refreshCells({ force: true });
@@ -764,7 +813,8 @@ const undo = async () => {
         // КРИТИЧНО: AG Grid не пересматривает cellStyle при изменении вложенных
         // полей строки (например row[field+'_style']) — поэтому стили после undo
         // визуально не возвращались. force:true заставляет перерисовать.
-        tableApi.value?.refreshCells({ force: true });
+        // Точечно по затронутым строкам — на больших листах быстрее чем force на всё.
+        _refreshRowNodes(Array.from(affectedRowRefs));
     } finally {
         // Снимаем флаг после Vue-флаша/тика — это ловит синхронные ag-grid колбэки,
         // но не блокирует следующий Ctrl+Z дольше необходимого.
@@ -781,6 +831,24 @@ const redo = async () => {
 
     try {
         if (entry && !Array.isArray(entry) && entry.kind) {
+            // См. комментарий в undo() — флушим pending перед row-op POST,
+            // чтобы аудит-комментарии не перемешивались.
+            if (_pendingSyncRows.size > 0) {
+                if (!props.isAdmin && _hasPendingNonAdminMods()) {
+                    redoStack.value.push(entry);
+                    isUndoing.value = false;
+                    _flushPendingSync();
+                    return;
+                }
+                const p = _buildSyncPayload();
+                if (p) {
+                    const dv = _buildDisplayValuesMap(p.rows);
+                    const body = { rows: p.rows, comment: 'Изменение ячеек' };
+                    if (Object.keys(dv).length > 0) body.display_values = dv;
+                    try { await axios.post(p.url, body); } catch (_) {}
+                }
+            }
+
             const inverse = _applyRowOp(entry);
             if (inverse) undoStack.value.push(inverse);
             tableApi.value?.refreshCells({ force: true });
@@ -806,7 +874,7 @@ const redo = async () => {
         });
         undoStack.value.push(undoChanges);
         syncChangesToServer(Array.from(affectedRowRefs));
-        tableApi.value?.refreshCells({ force: true });
+        _refreshRowNodes(Array.from(affectedRowRefs));
     } finally {
         await nextTick();
         isUndoing.value = false;
@@ -1515,7 +1583,11 @@ const handleRibbonAction = ({ type, value }) => {
             alert('Поставьте курсор в ячейку ниже значений, по которым нужно посчитать.');
             return;
         }
-        const fn = type === 'autosum' ? 'SUM' : type.split('-')[1].toUpperCase();
+        // HyperFormula использует имена функций как в Excel: AVERAGE, не AVG.
+        // Без маппинга кнопка «Среднее» писала =AVG(...) → #NAME? в ячейке.
+        const fnMap = { sum: 'SUM', avg: 'AVERAGE', count: 'COUNT', min: 'MIN', max: 'MAX' };
+        const suffix = type === 'autosum' ? 'sum' : type.split('-')[1];
+        const fn = fnMap[suffix] || 'SUM';
         saveUndoState([{ dataRef: row, field: colId, oldValue: row[colId], oldStyle: null }]);
         row[colId] = `=${fn}(${colId}1:${colId}${absRow})`;
         syncChangesToServer([row]);
@@ -1623,10 +1695,15 @@ const handleRibbonAction = ({ type, value }) => {
         tableData.value.splice(at, 0, newRow);
         // Сдвиг merges и rowHeights, чтобы они не "уехали" относительно данных.
         shiftMetaRowsOnInsert(at);
+        // Сбрасываем выделение — старые координаты указывают на сдвинувшиеся
+        // строки, последующая операция могла бы попасть не туда.
+        currentSelection.value = null;
         // Записываем row-level операцию в undo-стек: отмена = удалить эту строку.
         // Если это не вызов из самого undo (isUndoing), иначе не дублируем.
+        let _undoEntryInsert = null;
         if (!isUndoing.value) {
-            saveUndoState({ kind: 'row_delete', rowIndex: at, row: newRow });
+            _undoEntryInsert = { kind: 'row_delete', rowIndex: at, row: newRow };
+            saveUndoState(_undoEntryInsert);
         }
         // Шлём всю таблицу через updateData — это исключает гонку с буфером
         // правок ячеек: если бы делали отдельный insertRow + параллельный
@@ -1659,6 +1736,12 @@ const handleRibbonAction = ({ type, value }) => {
                 const idx = tableData.value.indexOf(newRow);
                 if (idx !== -1) tableData.value.splice(idx, 1);
                 shiftMetaRowsOnDelete(at);
+                // КРИТИЧНО: убираем нашу запись из undo-стека, иначе Ctrl+Z
+                // попытается «удалить newRow», но newRow уже нет → fallback
+                // удалит случайную строку на позиции at.
+                if (_undoEntryInsert && undoStack.value[undoStack.value.length - 1] === _undoEntryInsert) {
+                    undoStack.value.pop();
+                }
                 tableApi.value?.refreshCells({ force: true });
                 saveStatus.value = 'error';
                 lastSaveError.value = e?.response?.data?.message || 'Не удалось вставить строку';
@@ -1674,9 +1757,13 @@ const handleRibbonAction = ({ type, value }) => {
         const removedAt = activeRow;
         tableData.value.splice(activeRow, 1);
         shiftMetaRowsOnDelete(activeRow);
+        // Сбрасываем выделение — оно могло указывать на удалённую строку.
+        currentSelection.value = null;
         // Записываем row-level операцию в undo-стек: отмена = вставить обратно.
+        let _undoEntryDelete = null;
         if (!isUndoing.value) {
-            saveUndoState({ kind: 'row_insert', rowIndex: removedAt, row: removedRow });
+            _undoEntryDelete = { kind: 'row_insert', rowIndex: removedAt, row: removedRow };
+            saveUndoState(_undoEntryDelete);
         }
         const allRows = tableData.value.map((r, i) => ({ row_index: i, data: r }));
         _pendingSyncRows.clear();
@@ -1701,6 +1788,11 @@ const handleRibbonAction = ({ type, value }) => {
             .catch((e) => {
                 tableData.value.splice(removedAt, 0, removedRow);
                 shiftMetaRowsOnInsert(removedAt);
+                // КРИТИЧНО: убираем запись из undo-стека — иначе Ctrl+Z попытается
+                // «вставить removedRow», а строка уже на месте → дубликат.
+                if (_undoEntryDelete && undoStack.value[undoStack.value.length - 1] === _undoEntryDelete) {
+                    undoStack.value.pop();
+                }
                 tableApi.value?.refreshCells({ force: true });
                 saveStatus.value = 'error';
                 lastSaveError.value = e?.response?.data?.message || 'Не удалось удалить строку';
@@ -1710,10 +1802,21 @@ const handleRibbonAction = ({ type, value }) => {
     }
 
     // === Стилевые действия ===
-    // Capture Undo State
+    const rowsLen = targetRowsData.length;
+    const colsLen = cols.length;
+    // mergeCenter на множественном выделении меняет стиль ТОЛЬКО у (0,0) —
+    // остальные ячейки скрываются под merge. Для остальных типов трогаем все
+    // ячейки в выделении.
+    const isMergeCenterMulti = type === 'mergeCenter' && (rowsLen > 1 || colsLen > 1);
+    const isTouched = (ri, ci) => !isMergeCenterMulti || (ri === 0 && ci === 0);
+
+    // Capture Undo State — только для ячеек, которые будем менять. Иначе
+    // в стек попадают «no-op» записи, Ctrl+Z их «откатывает» (no-op) и
+    // визуально кажется что undo пропустил тики.
     const undoChanges = [];
-    targetRowsData.forEach(row => {
-        cols.forEach(cId => {
+    targetRowsData.forEach((row, ri) => {
+        cols.forEach((cId, ci) => {
+            if (!isTouched(ri, ci)) return;
             undoChanges.push({
                 dataRef: row, field: cId, oldValue: row[cId],
                 oldStyle: row[cId + '_style'] ? deepClone(row[cId + '_style']) : null
@@ -1727,11 +1830,12 @@ const handleRibbonAction = ({ type, value }) => {
         italic: activeRowData[activeCol + '_style']?.fontStyle !== 'italic' ? 'italic' : 'normal',
         underline: activeRowData[activeCol + '_style']?.textDecoration !== 'underline' ? 'underline' : 'none'
     };
-
-    const rowsLen = targetRowsData.length;
-    const colsLen = cols.length;
     targetRowsData.forEach((row, ri) => {
         cols.forEach((cId, ci) => {
+            // Пропускаем ячейки, которых не должно коснуться (mergeCenter non-top-left).
+            // Раньше для них создавали пустой row[cId + '_style'] = {} впустую — мусор
+            // улетал на сервер и в audit log.
+            if (!isTouched(ri, ci)) return;
             if (!row[cId + '_style']) row[cId + '_style'] = {};
             const style = row[cId + '_style'];
             const getNumericSize = (s) => parseInt(s?.replace('px', '') || '11');
@@ -1812,20 +1916,12 @@ const handleRibbonAction = ({ type, value }) => {
                 case 'fontSizeInc': style.fontSize = (getNumericSize(style.fontSize) + 1) + 'px'; break;
                 case 'fontSizeDec': style.fontSize = Math.max(8, getNumericSize(style.fontSize) - 1) + 'px'; break;
                 case 'mergeCenter':
-                    // При множественном выделении после merge остаётся видна
-                    // только верхне-левая ячейка. Стили остальных ячеек просто
-                    // утратились бы → применяем только к (0,0). Для одиночной
-                    // ячейки стиль применяем без merge.
-                    if (rowsLen > 1 || colsLen > 1) {
-                        if (ri === 0 && ci === 0) {
-                            style.textAlign = 'center';
-                            style.verticalAlign = 'middle';
-                            handleMergeCells();
-                        }
-                    } else {
-                        style.textAlign = 'center';
-                        style.verticalAlign = 'middle';
-                    }
+                    // isTouched гарантирует что сюда зайдёт только (0,0) при
+                    // multi-выделении или единственная ячейка при 1×1. Стиль
+                    // применяем безусловно, merge запускаем только при multi.
+                    style.textAlign = 'center';
+                    style.verticalAlign = 'middle';
+                    if (isMergeCenterMulti) handleMergeCells();
                     break;
                 case 'clear': row[cId] = ''; break;
             }
