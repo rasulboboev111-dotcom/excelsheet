@@ -234,18 +234,67 @@ export async function readXlsxFile(file) {
         }
 
         // Data validations
+        // Валидация типа "list" в xlsx бывает двух видов:
+        //   1) Литерал через запятую в кавычках: '"a,b,c"' → парсится напрямую.
+        //   2) Ссылка на диапазон: '=Sheet2!$A$1:$A$10' или '$D$1:$D$10'.
+        //      Excel сам резолвит эту ссылку при открытии файла, но мы импортируем
+        //      только данные текущего листа — для cross-sheet ссылок диапазон
+        //      недоступен. Раньше в dropdown попадал мусор ('#REF!' или текст формулы).
+        // Стратегия:
+        //   • Литерал → парсим.
+        //   • Same-sheet single-column ref ($D$1:$D$10) → берём уникальные значения
+        //     из колонки D импортированных данных.
+        //   • Cross-sheet / #REF! / иное → дропаем валидацию (dropdown не появится).
         if (ws.dataValidations && ws.dataValidations.model) {
             Object.entries(ws.dataValidations.model).forEach(([range, dv]) => {
-                if (dv && dv.type === 'list' && dv.formulae && dv.formulae[0]) {
-                    let raw = dv.formulae[0];
-                    if (raw.startsWith('"') && raw.endsWith('"')) raw = raw.slice(1, -1);
-                    const list = raw.split(/[,;]/).map(s => s.trim()).filter(Boolean);
-                    // Range may be "B2:B17" — apply to whole column letter
-                    const colMatch = /^([A-Z]+)\d+(:([A-Z]+)\d+)?$/.exec(range);
-                    if (colMatch) {
-                        sheet.validations[colMatch[1]] = list;
-                    }
+                if (!(dv && dv.type === 'list' && dv.formulae && dv.formulae[0])) return;
+                let raw = String(dv.formulae[0]).trim();
+                if (raw.startsWith('=')) raw = raw.slice(1).trim();
+
+                // Диапазон применения валидации в ячейках: "B2:B17" → колонка B.
+                const colMatch = /^([A-Z]+)\d+(:([A-Z]+)\d+)?$/.exec(range);
+                if (!colMatch) return;
+                const targetCol = colMatch[1];
+
+                // 1) Литерал-список в кавычках.
+                if (raw.startsWith('"') && raw.endsWith('"')) {
+                    const list = raw.slice(1, -1).split(/[,;]/).map(s => s.trim()).filter(Boolean);
+                    if (list.length > 0) sheet.validations[targetCol] = list;
+                    return;
                 }
+
+                // 2) Cross-sheet или сломанная ссылка — дропаем.
+                if (raw.includes('#REF!') || raw.includes('!')) {
+                    return;
+                }
+
+                // 3) Same-sheet single-column ref типа $D$1:$D$10 → значения из колонки D.
+                const rangeMatch = /^\$?([A-Z]+)\$?\d+:\$?([A-Z]+)\$?\d+$/.exec(raw);
+                if (rangeMatch && rangeMatch[1] === rangeMatch[2]) {
+                    const sourceCol = rangeMatch[1];
+                    const seen = new Set();
+                    const list = [];
+                    sheet.rowData.forEach(row => {
+                        const v = row[sourceCol];
+                        if (v == null || v === '') return;
+                        const key = String(v);
+                        if (seen.has(key)) return;
+                        seen.add(key);
+                        list.push(key);
+                    });
+                    if (list.length > 0) sheet.validations[targetCol] = list;
+                    return;
+                }
+
+                // 4) Литерал без кавычек (старые xlsx иногда так пишут): "a,b,c".
+                if (raw.includes(',') || raw.includes(';')) {
+                    const list = raw.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+                    if (list.length > 0 && !list.some(v => v.includes('!') || v.includes('#REF!'))) {
+                        sheet.validations[targetCol] = list;
+                    }
+                    return;
+                }
+                // Всё остальное (одиночное название колонки, namedRange и т.п.) — дроп.
             });
         }
 
