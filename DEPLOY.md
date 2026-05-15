@@ -59,7 +59,8 @@ docker compose exec backup /usr/local/bin/backup.sh
 gunzip -c /opt/excel/backups/excel_2026-XX-XX_HHMM.sql.gz | \
   docker compose exec -T postgres psql -U excel_user -d excel_db
 
-# Полный сброс (⚠ удалит БД!)
+# Полный сброс (⚠ удалит БД И БЭКАПЫ — сначала скопируй бэкапы наружу!)
+cp -r /opt/excel/backups ~/backups-safety-copy-$(date +%Y%m%d)
 docker compose down -v && docker compose up -d --build
 ```
 
@@ -372,12 +373,33 @@ echo 'OK';
 
 ### Полный сброс (если совсем сломано)
 
-⚠ **Удалит ВСЁ** — БД, файлы, сессии:
+⚠ **Удалит ВСЁ** — БД, файлы, сессии, **И БЭКАПЫ**.
+
+Бэкапы (`./backups/pre-migrate_*.sql.gz` и ежедневные) лежат в том же volume, что приложение → `down -v` уничтожит и их тоже. Восстановить будет неоткуда.
+
+**Сначала скопируй бэкапы наружу:**
+
+```bash
+# Скопировать всю папку с бэкапами в домашнюю директорию
+cp -r /opt/excel/backups ~/backups-safety-copy-$(date +%Y%m%d)
+
+# Проверить что скопировалось
+ls -la ~/backups-safety-copy-*/
+```
+
+**Только после этого** делай сброс:
 
 ```bash
 cd /opt/excel
 docker compose down -v
 docker compose up -d --build
+```
+
+После запуска, если нужно — восстанови БД из сохранённой копии:
+
+```bash
+gunzip -c ~/backups-safety-copy-YYYYMMDD/excel_LATEST.sql.gz | \
+  docker compose exec -T postgres psql -U excel_user -d excel_db
 ```
 
 ---
