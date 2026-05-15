@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\InvitationController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SheetAuditLogController;
 use Illuminate\Support\Facades\Route;
@@ -21,6 +22,15 @@ Route::get('/', function () {
         'canLogin' => Route::has('login'),
         'canRegister' => Route::has('register'),
     ]);
+});
+
+// Регистрация по приглашению. Публичный endpoint, доступен только гостям —
+// см. middleware('guest') в InvitationController::show/accept. Throttle мягкий,
+// чтобы прикрыть перебор токенов (40 случ. символов — перебор нереалистичен,
+// но 30/мин лишним не будет).
+Route::middleware(['guest', 'throttle:30,1'])->group(function () {
+    Route::get('/invite/{token}', [InvitationController::class, 'show'])->name('invitations.show');
+    Route::post('/invite/{token}', [InvitationController::class, 'accept'])->name('invitations.accept');
 });
 
 use App\Http\Controllers\SheetController;
@@ -87,6 +97,11 @@ Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
     Route::post('/users', [UserController::class, 'store'])->name('users.store');
     Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+
+    // Управление ссылками-приглашениями (создание/отзыв). Список инвайтов
+    // подгружается в UserController::index и рендерится на той же странице.
+    Route::post('/invitations', [InvitationController::class, 'store'])->name('invitations.store');
+    Route::delete('/invitations/{invitation}', [InvitationController::class, 'destroy'])->name('invitations.destroy');
 
     Route::get('/audit-log', [SheetAuditLogController::class, 'index'])->name('audit-log.index');
     Route::delete('/audit-log', [SheetAuditLogController::class, 'clear'])->name('audit-log.clear');

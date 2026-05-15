@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Sheet;
 use App\Models\User;
+use App\Models\UserInvitation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -29,8 +30,25 @@ class UserController extends Controller
                 ];
             });
 
+        // Активные ссылки-приглашения — рендерятся в той же странице. Полную
+        // ссылку собираем здесь, чтобы фронт мог сразу её показать/скопировать.
+        $invitations = UserInvitation::active()
+            ->with('creator:id,name')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function ($inv) {
+                return [
+                    'id'         => $inv->id,
+                    'url'        => route('invitations.show', $inv->token),
+                    'uses_count' => $inv->uses_count,
+                    'created_by' => $inv->creator?->name,
+                    'created_at' => $inv->created_at?->toDateTimeString(),
+                ];
+            });
+
         return Inertia::render('Users/Index', [
-            'users' => $users,
+            'users'       => $users,
+            'invitations' => $invitations,
         ]);
     }
 

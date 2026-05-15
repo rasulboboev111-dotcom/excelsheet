@@ -45,10 +45,12 @@ class HandleInertiaRequests extends Middleware
                 'gmailConnected' => $user ? $user->hasGoogleConnected() : false,
                 'gmailEmail'     => $user?->google_email,
             ],
-            // Flash-сообщения от GoogleAuthController после OAuth-callback'а.
+            // Flash-сообщения от GoogleAuthController после OAuth-callback'а
+            // + только что созданный токен инвайта (показать ссылку админу).
             'flash' => [
-                'success' => $request->session()->get('flash_success'),
-                'error'   => $request->session()->get('flash_error'),
+                'success'      => $request->session()->get('flash_success'),
+                'error'        => $request->session()->get('flash_error'),
+                'invite_token' => $request->session()->get('flash_invite_token'),
             ],
             'ziggy' => function () use ($request) {
                 return array_merge((new Ziggy)->toArray(), [

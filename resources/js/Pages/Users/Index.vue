@@ -1,11 +1,49 @@
 <script setup>
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
-import { Head, useForm, router } from '@inertiajs/vue3';
-import { ref } from 'vue';
+import { Head, useForm, router, usePage } from '@inertiajs/vue3';
+import { ref, computed, watch } from 'vue';
 
 const props = defineProps({
     users: Array,
+    invitations: { type: Array, default: () => [] },
 });
+
+const page = usePage();
+
+// Только что созданный токен — показываем модалку со ссылкой, чтобы админ
+// её скопировал. После закрытия модалки flash остаётся в session до следующего
+// перехода, но мы сами сбрасываем локальное состояние.
+const justCreatedToken = ref(page.props.flash?.invite_token || null);
+watch(() => page.props.flash?.invite_token, (v) => {
+    if (v) justCreatedToken.value = v;
+});
+const justCreatedUrl = computed(() => {
+    if (!justCreatedToken.value) return '';
+    return `${window.location.origin}/invite/${justCreatedToken.value}`;
+});
+
+const createInvite = () => {
+    router.post(route('invitations.store'), {}, { preserveScroll: true });
+};
+
+const revokeInvite = (inv) => {
+    if (!confirm('Отозвать ссылку? После отзыва по ней нельзя будет зарегистрироваться.')) return;
+    router.delete(route('invitations.destroy', inv.id), { preserveScroll: true });
+};
+
+const copyText = async (text) => {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (_) {
+        // Fallback: выделим текст в input, если clipboard API недоступен (http без TLS).
+        const el = document.createElement('textarea');
+        el.value = text;
+        document.body.appendChild(el);
+        el.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(el);
+    }
+};
 
 const showCreate = ref(false);
 const showEditId = ref(null);
@@ -72,7 +110,83 @@ const removeUser = (u) => {
         </template>
 
         <div class="py-8">
-            <div class="max-w-5xl mx-auto sm:px-6 lg:px-8">
+            <div class="max-w-5xl mx-auto sm:px-6 lg:px-8 space-y-6">
+
+                <!-- Блок ссылок-приглашений -->
+                <div class="bg-white shadow rounded">
+                    <div class="px-6 py-4 border-b flex items-center justify-between">
+                        <h3 class="font-bold">Ссылки для регистрации</h3>
+                        <button @click="createInvite"
+                                class="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700">
+                            + Создать ссылку
+                        </button>
+                    </div>
+                    <div class="px-6 py-3 text-xs text-gray-500 border-b bg-gray-50">
+                        Ссылка действует, пока её не отзовут. По ней может зарегистрироваться любой, кто её получит.
+                        Новые пользователи всегда создаются с базовой ролью — права админа и почты выдаются отдельно.
+                    </div>
+
+                    <table v-if="invitations.length" class="w-full text-sm">
+                        <thead class="bg-gray-100 text-left">
+                            <tr>
+                                <th class="px-6 py-2">Ссылка</th>
+                                <th class="px-6 py-2 w-32">Использований</th>
+                                <th class="px-6 py-2 w-40">Создал</th>
+                                <th class="px-6 py-2 w-40">Создана</th>
+                                <th class="px-6 py-2 w-40 text-right">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="inv in invitations" :key="inv.id" class="border-t">
+                                <td class="px-6 py-2 font-mono text-xs text-gray-700 truncate max-w-md" :title="inv.url">
+                                    {{ inv.url }}
+                                </td>
+                                <td class="px-6 py-2">{{ inv.uses_count }}</td>
+                                <td class="px-6 py-2 text-gray-600">{{ inv.created_by || '—' }}</td>
+                                <td class="px-6 py-2 text-gray-500 text-xs">{{ inv.created_at }}</td>
+                                <td class="px-6 py-2 text-right space-x-3">
+                                    <button @click="copyText(inv.url)" class="text-xs text-blue-600 hover:underline">Скопировать</button>
+                                    <button @click="revokeInvite(inv)" class="text-xs text-red-600 hover:underline">Отозвать</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div v-else class="px-6 py-6 text-sm text-gray-500 italic">
+                        Активных ссылок нет.
+                    </div>
+                </div>
+
+                <!-- Модалка только что созданной ссылки -->
+                <div v-if="justCreatedToken"
+                     class="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-black/30"
+                     @click.self="justCreatedToken = null">
+                    <div class="bg-white rounded shadow-xl w-full max-w-xl p-5">
+                        <div class="flex items-start justify-between mb-3">
+                            <h3 class="font-bold">Ссылка создана</h3>
+                            <button @click="justCreatedToken = null" class="text-gray-500 hover:text-black">&times;</button>
+                        </div>
+                        <p class="text-xs text-gray-500 mb-3">
+                            Передайте эту ссылку человеку, которого хотите пригласить. По ней он сможет зарегистрироваться.
+                            Ссылка остаётся активной, пока вы её не отзовёте.
+                        </p>
+                        <div class="flex gap-2">
+                            <input :value="justCreatedUrl" readonly
+                                   class="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm font-mono bg-gray-50"
+                                   @focus="$event.target.select()" />
+                            <button @click="copyText(justCreatedUrl)"
+                                    class="px-3 py-1.5 text-sm rounded bg-[#2563eb] text-white hover:bg-[#1d4ed8]">
+                                Скопировать
+                            </button>
+                        </div>
+                        <div class="mt-4 text-right">
+                            <button @click="justCreatedToken = null"
+                                    class="px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300">
+                                Закрыть
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="bg-white shadow rounded">
                     <div class="px-6 py-4 border-b flex items-center justify-between">
                         <h3 class="font-bold">Список пользователей</h3>

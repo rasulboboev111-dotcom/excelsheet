@@ -69,16 +69,27 @@ RUN npm run build
 FROM php:8.2-fpm-bookworm AS app
 
 # Системные утилиты + install-php-extensions.
-# postgresql-client добавлен для pg_dump в pre-migration backup в entrypoint.sh.
+# postgresql-client-16 ставится из PGDG-репозитория, а не из дефолтного
+# bookworm (там 15.x). Версия pg_dump должна совпадать с мажором сервера
+# (postgres:16-alpine в compose), иначе pg_dump падает с
+# "server version mismatch" и pre-migration backup в entrypoint.sh
+# отказывается мигрировать.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
+        gnupg \
         unzip \
         zip \
         tini \
-        postgresql-client \
+    && install -d /usr/share/keyrings \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
     && curl -sSLo /usr/local/bin/install-php-extensions \
         https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions \
     && chmod +x /usr/local/bin/install-php-extensions \
